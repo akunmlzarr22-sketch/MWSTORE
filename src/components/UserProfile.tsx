@@ -2,9 +2,9 @@
 import React, { useState, useEffect } from 'react';
 import { User, Mail, Smartphone, Lock, Save, ArrowLeft, ShieldCheck, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { UserAccount } from '../types';
-import { ApiService } from '../services/apiService';
-import { auth as firebaseAuth } from '../lib/firebase';
+import { UserAccount } from '@/types';
+import { ApiService } from '@/services/apiService';
+import { auth as firebaseAuth } from '@/lib/firebase';
 
 interface UserProfileProps {
   username: string;

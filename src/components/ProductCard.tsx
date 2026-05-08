@@ -1,7 +1,7 @@
 
 import React from 'react';
-import { Product } from '../types';
-import { formatIDR } from '../constants';
+import { Product } from '@/types';
+import { formatIDR } from '@/constants';
 import { Star, ShoppingCart, CreditCard } from 'lucide-react';
 
 interface ProductCardProps {

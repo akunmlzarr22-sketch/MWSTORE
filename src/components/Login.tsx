@@ -1,10 +1,10 @@
 
 import React, { useState } from 'react';
 import { ShoppingBag, Lock, User, ShieldCheck, ArrowRight, Loader2, Eye, EyeOff, Smartphone, Mail, Hash, Chrome } from 'lucide-react';
-import { UserRole, UserAccount } from '../types';
-import { ApiService } from '../services/apiService';
-import { APP_CONFIG } from '../config';
-import { signInWithPopup, auth as firebaseAuth, googleProvider } from '../lib/firebase';
+import { UserRole, UserAccount } from '@/types';
+import { ApiService } from '@/services/apiService';
+import { APP_CONFIG } from '@/config';
+import { signInWithPopup, auth as firebaseAuth, googleProvider } from '@/lib/firebase';
 
 interface LoginProps {
   onLogin: (role: UserRole, username: string) => void;

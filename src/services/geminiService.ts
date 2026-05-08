@@ -1,6 +1,6 @@
 
 import { GoogleGenAI } from "@google/genai";
-import { Product } from "../types";
+import { Product } from "@/types";
 
 // Always use process.env.API_KEY directly as per guidelines
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });

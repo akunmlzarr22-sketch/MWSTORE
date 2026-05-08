@@ -13,8 +13,8 @@ import {
   orderBy,
   limit
 } from 'firebase/firestore';
-import { db, auth } from '../lib/firebase';
-import { Order, CartItem, UserAccount, TopUpTransaction, Message, Product } from '../types';
+import { db, auth } from '@/lib/firebase';
+import { Order, CartItem, UserAccount, TopUpTransaction, Message, Product } from '@/types';
 
 enum OperationType {
   CREATE = 'create',

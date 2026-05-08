@@ -1,8 +1,8 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { MessageSquare, Send, X, Bot, User, Loader2 } from 'lucide-react';
-import { getAiRecommendation } from '../services/geminiService';
-import { MOCK_PRODUCTS } from '../constants';
+import { getAiRecommendation } from '@/services/geminiService';
+import { MOCK_PRODUCTS } from '@/constants';
 
 const AiAssistant: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);

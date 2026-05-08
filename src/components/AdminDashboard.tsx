@@ -2,10 +2,10 @@
 import React, { useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { Package, Search, TrendingUp, DollarSign, ArrowLeft, Plus, X, Image as ImageIcon, Tag, Trash2, LayoutDashboard, ShoppingBasket, Wallet, RefreshCw, Smartphone, Users, User, Eye, EyeOff, ShieldCheck, AlertCircle, Settings, Mail, MessageCircle, LayoutGrid, Coins, ArrowUpRight, ArrowDownLeft, Clock, Copy, Check, CheckCircle, Menu } from 'lucide-react';
-import { formatIDR } from '../constants';
-import { Order, Product, UserAccount, TopUpTransaction, Message } from '../types';
-import { APP_CONFIG } from '../config';
-import { ApiService } from '../services/apiService';
+import { formatIDR } from '@/constants';
+import { Order, Product, UserAccount, TopUpTransaction, Message } from '@/types';
+import { APP_CONFIG } from '@/config';
+import { ApiService } from '@/services/apiService';
 
 const chartData = [
   { name: 'Sen', sales: 4000000 },

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageCircle, Send, User, ShieldCheck, Clock, X } from 'lucide-react';
-import { Message } from '../types';
-import { ApiService } from '../services/apiService';
+import { Message } from '@/types';
+import { ApiService } from '@/services/apiService';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface CustomerServiceProps {
