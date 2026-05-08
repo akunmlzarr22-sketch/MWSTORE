@@ -1,73 +1,55 @@
 
-import { 
-  collection, 
-  doc, 
-  setDoc, 
-  getDoc, 
-  getDocs, 
-  updateDoc, 
-  query, 
-  where, 
-  onSnapshot,
-  Timestamp,
-  orderBy,
-  limit
-} from 'firebase/firestore';
-import { db, auth } from '@/lib/firebase';
-import { Order, CartItem, UserAccount, TopUpTransaction, Message, Product } from '@/types';
-
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string | null;
-    email?: string | null;
-    emailVerified?: boolean | null;
-    isAnonymous?: boolean | null;
-    tenantId?: string | null;
-    providerInfo?: {
-      providerId?: string | null;
-      email?: string | null;
-    }[];
-  }
-}
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData?.map(provider => ({
-        providerId: provider.providerId,
-        email: provider.email,
-      })) || []
-    },
-    operationType,
-    path
-  }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
+import { Order, UserAccount, TopUpTransaction, Message, Product } from '@/types';
 
 export const ApiService = {
-  // User Local Storage Helpers
+  _getLocalOrders: (): Order[] => {
+    const data = localStorage.getItem('mwstore_orders');
+    return data ? JSON.parse(data) : [];
+  },
+
+  _saveLocalOrders: (orders: Order[]) => {
+    localStorage.setItem('mwstore_orders', JSON.stringify(orders));
+  },
+
+  _getLocalTopUps: (): TopUpTransaction[] => {
+    const data = localStorage.getItem('mwstore_topups');
+    return data ? JSON.parse(data) : [];
+  },
+
+  _saveLocalTopUps: (topups: TopUpTransaction[]) => {
+    localStorage.setItem('mwstore_topups', JSON.stringify(topups));
+  },
+
+  _getLocalProducts: (): Product[] => {
+    const data = localStorage.getItem('mwstore_products');
+    return data ? JSON.parse(data) : [];
+  },
+
+  _saveLocalProducts: (products: Product[]) => {
+    localStorage.setItem('mwstore_products', JSON.stringify(products));
+  },
+
+  _getLocalMessages: (): Message[] => {
+    const data = localStorage.getItem('mwstore_messages');
+    return data ? JSON.parse(data) : [];
+  },
+
+  _saveLocalMessages: (messages: Message[]) => {
+    localStorage.setItem('mwstore_messages', JSON.stringify(messages));
+  },
+
+  _getLocalSettings: () => {
+    const data = localStorage.getItem('mwstore_settings');
+    return data ? JSON.parse(data) : { maintenanceMode: false };
+  },
+
+  _saveLocalSettings: (settings: any) => {
+    localStorage.setItem('mwstore_settings', JSON.stringify(settings));
+  },
+
   _getLocalUsers: (): UserAccount[] => {
-    const users = localStorage.getItem('mwstore_users');
-    return users ? JSON.parse(users) : [];
+    const data = localStorage.getItem('mwstore_users');
+    return data ? JSON.parse(data) : [];
   },
 
   _saveLocalUsers: (users: UserAccount[]) => {
@@ -75,16 +57,15 @@ export const ApiService = {
   },
 
   // Get user profile
-  getUser: async (uid: string): Promise<UserAccount | null> => {
+  getUser: async (username: string): Promise<UserAccount | null> => {
     const users = ApiService._getLocalUsers();
-    // Assuming uid is username for local storage if not using Firebase Auth
-    return users.find(u => u.username === uid) || null;
+    return users.find(u => u.username === username) || null;
   },
 
   // Save/Update user profile
-  saveUser: async (user: UserAccount, uid: string) => {
+  saveUser: async (user: UserAccount, username: string) => {
     const users = ApiService._getLocalUsers();
-    const index = users.findIndex(u => u.username === uid);
+    const index = users.findIndex(u => u.username === username);
     if (index !== -1) {
       users[index] = { ...users[index], ...user };
     } else {
@@ -104,131 +85,109 @@ export const ApiService = {
   },
 
   // Orders
-  getOrders: async (uid: string, isAdmin: boolean = false): Promise<Order[]> => {
-    try {
-      const q = isAdmin 
-        ? query(collection(db, 'orders'), orderBy('date', 'desc'))
-        : query(collection(db, 'orders'), where('uid', '==', uid), orderBy('date', 'desc'));
-      
-      const querySnapshot = await getDocs(q);
-      return querySnapshot.docs.map(d => d.data() as Order);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'orders');
-      return [];
-    }
+  getOrders: async (username: string, isAdmin: boolean = false): Promise<Order[]> => {
+    const allOrders = ApiService._getLocalOrders();
+    if (isAdmin) return allOrders;
+    return allOrders.filter(o => o.username === username);
   },
 
-  createOrder: async (order: Order, uid: string) => {
-    try {
-      // Menambahkan uid ke order agar sesuai rule
-      const orderWithUid = { ...order, uid };
-      await setDoc(doc(db, 'orders', order.id), orderWithUid);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `orders/${order.id}`);
-    }
+  createOrder: async (order: Order, username: string) => {
+    const orders = ApiService._getLocalOrders();
+    orders.unshift({ ...order, username });
+    ApiService._saveLocalOrders(orders);
   },
 
   updateOrderStatus: async (orderId: string, status: string) => {
-    try {
-      await updateDoc(doc(db, 'orders', orderId), { status });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `orders/${orderId}`);
+    const orders = ApiService._getLocalOrders();
+    const index = orders.findIndex(o => o.id === orderId);
+    if (index !== -1) {
+      orders[index].status = status as any;
+      ApiService._saveLocalOrders(orders);
     }
   },
 
   // Top Ups
-  getTopUps: async (uid: string, isAdmin: boolean = false): Promise<TopUpTransaction[]> => {
-    try {
-      const q = isAdmin
-        ? query(collection(db, 'topups'), orderBy('date', 'desc'))
-        : query(collection(db, 'topups'), where('uid', '==', uid), orderBy('date', 'desc'));
-      
-      const querySnapshot = await getDocs(q);
-      return querySnapshot.docs.map(d => d.data() as TopUpTransaction);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'topups');
-      return [];
-    }
+  getTopUps: async (username: string, isAdmin: boolean = false): Promise<TopUpTransaction[]> => {
+    const allTopUps = ApiService._getLocalTopUps();
+    if (isAdmin) return allTopUps;
+    return allTopUps.filter(t => t.username === username);
   },
 
-  createTopUp: async (topup: TopUpTransaction, uid: string) => {
-    try {
-      const topupWithUid = { ...topup, uid };
-      await setDoc(doc(db, 'topups', topup.id), topupWithUid);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `topups/${topup.id}`);
-    }
+  createTopUp: async (topup: TopUpTransaction, username: string) => {
+    const topups = ApiService._getLocalTopUps();
+    topups.unshift({ ...topup, username });
+    ApiService._saveLocalTopUps(topups);
   },
 
   updateTopUpStatus: async (topupId: string, status: string) => {
-    try {
-      await updateDoc(doc(db, 'topups', topupId), { status });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `topups/${topupId}`);
+    const topups = ApiService._getLocalTopUps();
+    const index = topups.findIndex(t => t.id === topupId);
+    if (index !== -1) {
+      topups[index].status = status as any;
+      ApiService._saveLocalTopUps(topups);
     }
   },
 
   // Products
-  getProducts: async (): Promise<any[]> => {
-    try {
-      const querySnapshot = await getDocs(collection(db, 'products'));
-      // Filter out deleted products in JS just in case soft delete was used
-      return querySnapshot.docs
-        .map(d => d.data())
-        .filter(p => !p.deleted);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'products');
-      return [];
-    }
+  getProducts: async (): Promise<Product[]> => {
+    let products = ApiService._getLocalProducts();
+    // Filter out deleted products if any (redundant if using splicing but good to have)
+    products = products.filter(p => !p.deleted);
+    return products;
   },
 
-  saveProduct: async (product: any) => {
-    try {
-      console.log('Saving product:', product);
-      await setDoc(doc(db, 'products', product.id), product);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `products/${product.id}`);
+  saveProducts: (products: Product[]) => {
+    ApiService._saveLocalProducts(products);
+  },
+
+  saveProduct: async (product: Product) => {
+    const products = ApiService._getLocalProducts();
+    const index = products.findIndex(p => p.id === product.id);
+    if (index !== -1) {
+      products[index] = product;
+    } else {
+      products.push(product);
     }
+    ApiService._saveLocalProducts(products);
   },
 
   deleteProduct: async (productId: string) => {
-    try {
-      // Use real delete for better UX as rules allow it
-      const { deleteDoc } = await import('firebase/firestore');
-      await deleteDoc(doc(db, 'products', productId));
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `products/${productId}`);
+    const products = ApiService._getLocalProducts();
+    const index = products.findIndex(p => p.id === productId);
+    if (index !== -1) {
+      // Real delete as requested for better UX if local
+      products.splice(index, 1);
+      ApiService._saveLocalProducts(products);
     }
   },
 
   // Messages
-  listenToMessages: (uid: string, isAdmin: boolean, callback: (messages: Message[]) => void) => {
-    const q = isAdmin
-      ? query(collection(db, 'messages'), orderBy('timestamp', 'desc'))
-      : query(collection(db, 'messages'), where('senderUid', '==', uid), orderBy('timestamp', 'desc'));
-    
-    return onSnapshot(q, (snapshot) => {
-      const messages = snapshot.docs.map(d => d.data() as Message);
-      callback(messages);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'messages');
-    });
+  listenToMessages: (username: string, isAdmin: boolean, callback: (messages: Message[]) => void) => {
+    const checkMessages = () => {
+      const allMessages = ApiService._getLocalMessages();
+      const filtered = isAdmin 
+        ? allMessages 
+        : allMessages.filter(m => m.senderUid === username || m.recipient === username);
+      callback(filtered);
+    };
+
+    checkMessages();
+    const interval = setInterval(checkMessages, 2000);
+    return () => clearInterval(interval);
   },
 
-  sendMessage: async (message: Message, senderUid: string) => {
-    try {
-      const messageWithUid = { ...message, senderUid };
-      await setDoc(doc(db, 'messages', message.id), messageWithUid);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, `messages/${message.id}`);
-    }
+  sendMessage: async (message: Message, username: string) => {
+    const messages = ApiService._getLocalMessages();
+    messages.unshift({ ...message, senderUid: username });
+    ApiService._saveLocalMessages(messages);
   },
 
   markAsRead: async (messageId: string) => {
-    try {
-      await updateDoc(doc(db, 'messages', messageId), { read: true });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `messages/${messageId}`);
+    const messages = ApiService._getLocalMessages();
+    const index = messages.findIndex(m => m.id === messageId);
+    if (index !== -1) {
+      messages[index].read = true;
+      ApiService._saveLocalMessages(messages);
     }
   },
 
@@ -243,21 +202,19 @@ export const ApiService = {
     return false;
   },
 
-
   // Maintenance
   listenToSettings: (callback: (settings: any) => void) => {
-    return onSnapshot(doc(db, 'settings', 'global'), (doc) => {
-      callback(doc.data());
-    }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'settings/global');
-    });
+    const checkSettings = () => {
+      callback(ApiService._getLocalSettings());
+    };
+    checkSettings();
+    const interval = setInterval(checkSettings, 5000);
+    return () => clearInterval(interval);
   },
 
   setMaintenanceMode: async (status: boolean) => {
-    try {
-      await setDoc(doc(db, 'settings', 'global'), { maintenanceMode: status }, { merge: true });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'settings/global');
-    }
+    const settings = ApiService._getLocalSettings();
+    settings.maintenanceMode = status;
+    ApiService._saveLocalSettings(settings);
   }
 };

@@ -1070,12 +1070,26 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <div className="animate-in fade-in duration-500">
             <div className="flex justify-between items-center mb-8">
                <h2 className="text-3xl font-black text-gray-900">Katalog Produk</h2>
-               <button 
-                 onClick={() => setShowAddModal(true)}
-                 className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all active:scale-95"
-               >
-                 <Plus className="w-4 h-4" /> Tambah Produk
-               </button>
+                <button 
+                  onClick={() => {
+                    setEditingProduct(null);
+                    setNewProduct({ 
+                      name: '', 
+                      description: '', 
+                      price: '', 
+                      category: 'Top Up Game', 
+                      image: '', 
+                      stock: '',
+                      discount: '0',
+                      productType: 'Duplikat',
+                      inventory: ['']
+                    });
+                    setShowAddModal(true);
+                  }}
+                  className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all active:scale-95"
+                >
+                  <Plus className="w-4 h-4" /> Tambah Produk
+                </button>
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
@@ -1089,7 +1103,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <h4 className="font-black truncate pr-4 text-gray-900 leading-tight">{p.name}</h4>
                         <div className="flex gap-1">
                           <button onClick={() => handleEditProduct(p)} className="text-gray-300 hover:text-blue-500 transition-colors p-1"><Settings className="w-5 h-5" /></button>
-                          <button onClick={() => onDeleteProduct(p.id)} className="text-gray-300 hover:text-red-500 transition-colors p-1"><Trash2 className="w-5 h-5" /></button>
+                          <button 
+                            onClick={() => {
+                              if (confirm(`Hapus produk ${p.name}?`)) {
+                                onDeleteProduct(p.id);
+                              }
+                            }} 
+                            className="text-gray-300 hover:text-red-500 transition-colors p-1"
+                          >
+                            <Trash2 className="w-5 h-5" />
+                          </button>
                         </div>
                       </div>
                       <div className="flex justify-between items-end">
@@ -1151,7 +1174,27 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                            )}
                         </div>
                         <div className="flex-1 space-y-3">
-                           <button type="button" className="w-full bg-[#64748b] text-white py-2.5 rounded-lg text-sm font-bold shadow-sm hover:bg-[#475569] transition-all">
+                           <input 
+                             type="file" 
+                             id="imageUpload" 
+                             className="hidden" 
+                             accept="image/*"
+                             onChange={(e) => {
+                               const file = e.target.files?.[0];
+                               if (file) {
+                                 const reader = new FileReader();
+                                 reader.onloadend = () => {
+                                   setNewProduct({...newProduct, image: reader.result as string});
+                                 };
+                                 reader.readAsDataURL(file);
+                               }
+                             }}
+                           />
+                           <button 
+                             type="button" 
+                             onClick={() => document.getElementById('imageUpload')?.click()}
+                             className="w-full bg-[#64748b] text-white py-2.5 rounded-lg text-sm font-bold shadow-sm hover:bg-[#475569] transition-all"
+                           >
                               Buka Galeri
                            </button>
                            <div className="grid grid-cols-2 gap-3">

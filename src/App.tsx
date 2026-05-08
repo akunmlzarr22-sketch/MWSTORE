@@ -2,8 +2,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { ShoppingBag, Search, ChevronRight, LayoutGrid, LayoutDashboard, Trash2, Plus, Minus, CreditCard, AlertCircle, ShoppingCart, Settings, LogOut, Wallet, QrCode, Building2, CheckCircle2, Copy, MessageCircle, Mail, RefreshCw, Download, Info, Share2, ExternalLink, X, Smartphone, Globe, Gamepad2, Receipt, ShieldCheck, Banknote, Sparkles, Check, Scan, Save, MonitorSmartphone, Clock, Coins, ArrowUpCircle, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { onAuthStateChanged } from 'firebase/auth';
-import { auth as firebaseAuth } from '@/lib/firebase';
 import { Product, CartItem, Order, View, AuthState, UserRole, UserAccount } from '@/types';
 import { MOCK_PRODUCTS, formatIDR } from '@/constants';
 import ProductCard from '@/components/ProductCard';
@@ -30,53 +28,30 @@ const App: React.FC = () => {
   });
   const [isLoading, setIsLoading] = useState(true);
 
-  // Authenticated listener
+  // Authenticated listener - Updated for Local Storage
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
-      if (user) {
-        // Fetch user data from Firestore
-        const userData = await ApiService.getUser(user.uid);
-        if (userData) {
-          setAuth({
-            isLoggedIn: true,
-            role: userData.role,
-            username: userData.username,
-            balance: userData.balance
-          });
-        } else {
-          // New user logic or handle error
-          setAuth({
-            isLoggedIn: true,
-            role: 'user',
-            username: user.displayName || user.email?.split('@')[0] || 'User',
-            balance: 0
-          });
-        }
-      } else {
-        setAuth({
-          isLoggedIn: false,
-          role: null,
-          username: null,
-          balance: null
-        });
-      }
-      setIsLoading(false);
-    });
-
-    return () => unsubscribe();
+    const savedAuth = localStorage.getItem('mwstore_auth');
+    if (savedAuth) {
+      setAuth(JSON.parse(savedAuth));
+    }
+    setIsLoading(false);
   }, []);
 
   // Fetch initial data
   useEffect(() => {
     const fetchData = async () => {
-      const fetchedProducts = await ApiService.getProducts();
-      setProducts(fetchedProducts.length > 0 ? fetchedProducts : MOCK_PRODUCTS);
+      let fetchedProducts = await ApiService.getProducts();
+      if (fetchedProducts.length === 0) {
+        ApiService.saveProducts(MOCK_PRODUCTS);
+        fetchedProducts = MOCK_PRODUCTS;
+      }
+      setProducts(fetchedProducts);
       
       const fetchedUsers = await ApiService.getUsers();
       setUsers(fetchedUsers);
 
       if (auth.isLoggedIn && auth.username) {
-        const fetchedOrders = await ApiService.getOrders(firebaseAuth.currentUser?.uid || '', auth.role === 'admin');
+        const fetchedOrders = await ApiService.getOrders(auth.username, auth.role === 'admin');
         setOrders(fetchedOrders);
       }
     };
@@ -124,7 +99,7 @@ const App: React.FC = () => {
 
   const handleUpdateOrder = async (orderId: string, status: any) => {
     await ApiService.updateOrderStatus(orderId, status);
-    const fetchedOrders = await ApiService.getOrders(firebaseAuth.currentUser?.uid || '', auth.role === 'admin');
+    const fetchedOrders = await ApiService.getOrders(auth.username || '', auth.role === 'admin');
     setOrders(fetchedOrders);
   };
 
@@ -156,7 +131,7 @@ const App: React.FC = () => {
   // Sync unread messages
   useEffect(() => {
     if (auth.isLoggedIn && auth.username) {
-      const unsubscribe = ApiService.listenToMessages(firebaseAuth.currentUser?.uid || '', auth.role === 'admin', (msgs) => {
+      const unsubscribe = ApiService.listenToMessages(auth.username, auth.role === 'admin', (msgs) => {
         const unreadCount = msgs.filter(m => m.recipient === auth.username && !m.read).length;
         setUnreadMessages(unreadCount);
       });
@@ -167,11 +142,14 @@ const App: React.FC = () => {
   // Update Auth State Balance when users change
   useEffect(() => {
     if (auth.username && auth.isLoggedIn) {
-      // Balance is already managed via AuthState which is updated in onAuthStateChanged
-      // If we need to refresh it specifically when users list changes (admin action),
-      // we can fetch it explicitly.
+      const currentUser = users.find(u => u.username === auth.username);
+      if (currentUser && currentUser.balance !== auth.balance) {
+        const newAuth = { ...auth, balance: currentUser.balance };
+        setAuth(newAuth);
+        localStorage.setItem('mwstore_auth', JSON.stringify(newAuth));
+      }
     }
-  }, [users, auth.username, auth.isLoggedIn]);
+  }, [users, auth.username, auth.isLoggedIn, auth.balance]);
 
   const categories = ['Semua', ...new Set(products.map(p => p.category))];
 
@@ -185,12 +163,14 @@ const App: React.FC = () => {
 
   const handleLogin = (role: UserRole, username: string) => {
     const user = users.find(u => u.username === username);
-    setAuth({ 
+    const newAuth: AuthState = { 
       isLoggedIn: true, 
       role, 
       username, 
       balance: user?.balance || 0 
-    });
+    };
+    setAuth(newAuth);
+    localStorage.setItem('mwstore_auth', JSON.stringify(newAuth));
   };
 
   const handleRegister = (account: UserAccount): boolean => {
@@ -204,8 +184,8 @@ const App: React.FC = () => {
   };
 
   const handleLogout = async () => {
-    await firebaseAuth.signOut();
     setAuth({ isLoggedIn: false, role: null, username: null, balance: null });
+    localStorage.removeItem('mwstore_auth');
     setView('home');
     setCart([]);
   };
@@ -291,14 +271,16 @@ const App: React.FC = () => {
         username: auth.username || 'Guest'
       };
 
-      await ApiService.createOrder(newOrder, firebaseAuth.currentUser?.uid || 'guest');
+      await ApiService.createOrder(newOrder, auth.username || 'guest');
       setOrders(prev => [newOrder, ...prev]);
 
       // If paid by balance, update balance
       if (paymentMethod === 'Saldo Akun' && auth.username) {
         const newBalance = (auth.balance || 0) - cartTotal;
         await ApiService.updateBalanceByUsername(auth.username, newBalance);
-        setAuth(prev => ({ ...prev, balance: newBalance }));
+        const updatedAuth = { ...auth, balance: newBalance };
+        setAuth(updatedAuth);
+        localStorage.setItem('mwstore_auth', JSON.stringify(updatedAuth));
       }
 
       setCart([]);
@@ -324,7 +306,7 @@ const App: React.FC = () => {
           status: 'Pending'
         };
 
-        await ApiService.createTopUp(newTopUp, firebaseAuth.currentUser?.uid || 'guest');
+        await ApiService.createTopUp(newTopUp, auth.username || 'guest');
 
         setIsProcessing(false);
         
