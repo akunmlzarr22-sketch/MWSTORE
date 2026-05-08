@@ -4,7 +4,6 @@ import { User, Mail, Smartphone, Lock, Save, ArrowLeft, ShieldCheck, Eye, EyeOff
 import { motion } from 'motion/react';
 import { UserAccount } from '../types';
 import { ApiService } from '../services/apiService';
-
 import { auth as firebaseAuth } from '../lib/firebase';
 
 interface UserProfileProps {
