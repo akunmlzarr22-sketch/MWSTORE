@@ -247,58 +247,69 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       image: '', 
       stock: '',
       discount: '0',
-      productType: ''
-    });
-    setShowAddModal(false);
-  };
-
-  const handleAddProduct = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newProduct.name || !newProduct.price) return;
-
-    if (editingProduct) {
-      const updatedProduct: Product = {
-        ...editingProduct,
-        name: newProduct.name,
-        description: newProduct.description,
-        price: Number(newProduct.price),
-        category: newProduct.category,
-        image: newProduct.image,
-        stock: newProduct.productType === 'Unik' ? newProduct.inventory.filter(i => i.trim()).length : Number(newProduct.stock),
-        discount: Number(newProduct.discount),
-        productType: newProduct.productType as 'Duplikat' | 'Unik',
-        inventory: newProduct.inventory.filter(i => i.trim())
-      };
-      onAddProduct(updatedProduct); 
-      setEditingProduct(null);
-    } else {
-      const product: Product = {
-        id: Math.random().toString(36).substring(7),
-        name: newProduct.name,
-        description: newProduct.description,
-        price: Number(newProduct.price),
-        category: newProduct.category,
-        image: newProduct.image || `https://picsum.photos/seed/${newProduct.name}/600/400`,
-        rating: 5.0,
-        stock: newProduct.productType === 'Unik' ? newProduct.inventory.filter(i => i.trim()).length : (Number(newProduct.stock) || 10),
-        discount: Number(newProduct.discount),
-        productType: newProduct.productType as 'Duplikat' | 'Unik',
-        inventory: newProduct.inventory.filter(i => i.trim())
-      };
-      onAddProduct(product);
-    }
-    setNewProduct({ 
-      name: '', 
-      description: '', 
-      price: '', 
-      category: 'Top Up Game', 
-      image: '', 
-      stock: '',
-      discount: '0',
       productType: 'Duplikat',
       inventory: ['']
     });
     setShowAddModal(false);
+  };
+
+  const handleAddProduct = async (e: React.FormEvent | React.MouseEvent) => {
+    if (e) e.preventDefault();
+    if (!newProduct.name || !newProduct.price) {
+      alert("Nama dan harga harus diisi!");
+      return;
+    }
+
+    try {
+      if (editingProduct) {
+        const updatedProduct: Product = {
+          ...editingProduct,
+          name: newProduct.name,
+          description: newProduct.description,
+          price: Number(newProduct.price),
+          category: newProduct.category,
+          image: newProduct.image,
+          stock: newProduct.productType === 'Unik' ? newProduct.inventory.filter(i => i.trim()).length : Number(newProduct.stock),
+          discount: Number(newProduct.discount),
+          productType: (newProduct.productType || 'Duplikat') as 'Duplikat' | 'Unik',
+          inventory: newProduct.inventory.filter(i => i.trim())
+        };
+        await onAddProduct(updatedProduct); 
+        setEditingProduct(null);
+        alert("Produk berhasil diperbarui!");
+      } else {
+        const product: Product = {
+          id: 'PROD-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7),
+          name: newProduct.name,
+          description: newProduct.description,
+          price: Number(newProduct.price),
+          category: newProduct.category,
+          image: newProduct.image || `https://picsum.photos/seed/${newProduct.name}/600/400`,
+          rating: 5.0,
+          stock: newProduct.productType === 'Unik' ? newProduct.inventory.filter(i => i.trim()).length : (Number(newProduct.stock) || 10),
+          discount: Number(newProduct.discount),
+          productType: (newProduct.productType || 'Duplikat') as 'Duplikat' | 'Unik',
+          inventory: newProduct.inventory.filter(i => i.trim())
+        };
+        await onAddProduct(product);
+        alert("Produk berhasil ditambahkan!");
+      }
+      setNewProduct({ 
+        name: '', 
+        description: '', 
+        price: '', 
+        category: 'Top Up Game', 
+        image: '', 
+        stock: '',
+        discount: '0',
+        productType: 'Duplikat',
+        inventory: ['']
+      });
+      setShowAddModal(false);
+    } catch (error) {
+      console.error("Error creating product:", error);
+      alert("Gagal menyimpan produk. Silakan cek koneksi atau izin admin.");
+    }
   };
 
   const COLORS = ['#3B82F6', '#60A5FA', '#93C5FD', '#2563EB', '#1D4ED8', '#1E40AF', '#1E3A8A'];

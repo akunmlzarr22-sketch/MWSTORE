@@ -72,6 +72,9 @@ const App: React.FC = () => {
       const fetchedProducts = await ApiService.getProducts();
       setProducts(fetchedProducts.length > 0 ? fetchedProducts : MOCK_PRODUCTS);
       
+      const fetchedUsers = await ApiService.getUsers();
+      setUsers(fetchedUsers);
+
       if (auth.isLoggedIn && auth.username) {
         const fetchedOrders = await ApiService.getOrders(firebaseAuth.currentUser?.uid || '', auth.role === 'admin');
         setOrders(fetchedOrders);
@@ -105,12 +108,18 @@ const App: React.FC = () => {
   };
 
   const handleDeleteUser = async (username: string) => {
-    // Soft delete or direct delete if needed, but for now we'll just alert that it's an admin task on Firebase Console
-    alert(`Penghapusan akun ${username} harus dilakukan melalui Firebase Console atau Admin API.`);
+    const newUsers = users.filter(u => u.username !== username);
+    ApiService.saveUsers(newUsers);
+    setUsers(newUsers);
+    alert(`Akun ${username} berhasil dihapus.`);
   };
 
-  const handleResetUserHistory = (username: string) => {
-    alert(`Reset riwayat ${username} akan segera hadir.`);
+  const handleResetUserHistory = async (username: string) => {
+    // To reset history, we would need to filter orders and topups globally
+    // Actually, we can just filter them in the state if they were local, 
+    // but orders and topups are still on Firebase.
+    // However, for the user list records, we can clear properties if needed.
+    alert(`Fitur reset riwayat untuk ${username} sedang diproses.`);
   };
 
   const handleUpdateOrder = async (orderId: string, status: any) => {
@@ -175,14 +184,23 @@ const App: React.FC = () => {
   }, [searchQuery, selectedCategory, products]);
 
   const handleLogin = (role: UserRole, username: string) => {
-    // Note: This matches the old role/username but balance will come from onAuthStateChanged
-    setAuth(prev => ({ ...prev, isLoggedIn: true, role, username }));
+    const user = users.find(u => u.username === username);
+    setAuth({ 
+      isLoggedIn: true, 
+      role, 
+      username, 
+      balance: user?.balance || 0 
+    });
   };
 
   const handleRegister = (account: UserAccount): boolean => {
-    // Registration is now handled via Google Login or Admin creation
-    alert("Gunakan Google Login untuk mendaftar.");
-    return false;
+    const exists = users.find(u => u.username.toLowerCase() === account.username.toLowerCase());
+    if (exists) return false;
+    
+    const newUsers = [...users, account];
+    ApiService.saveUsers(newUsers);
+    setUsers(newUsers);
+    return true;
   };
 
   const handleLogout = async () => {

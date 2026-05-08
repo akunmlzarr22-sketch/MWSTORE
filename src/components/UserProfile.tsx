@@ -21,14 +21,12 @@ const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onUpdate })
 
   useEffect(() => {
     const fetchUser = async () => {
-      const uid = firebaseAuth.currentUser?.uid;
-      if (uid) {
-        const currentUser = await ApiService.getUser(uid);
-        if (currentUser) {
-          setUser(currentUser);
-          setEmail(currentUser.email || '');
-          setPhone(currentUser.phone || '');
-        }
+      // Use username prop as lookup key (local or Firebase)
+      const currentUser = await ApiService.getUser(username);
+      if (currentUser) {
+        setUser(currentUser);
+        setEmail(currentUser.email || '');
+        setPhone(currentUser.phone || '');
       }
     };
     fetchUser();
@@ -39,14 +37,13 @@ const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onUpdate })
     setMessage(null);
 
     try {
-      const uid = firebaseAuth.currentUser?.uid;
-      if (uid && user) {
+      if (user) {
         const updatedUser: UserAccount = {
           ...user,
           email,
           phone
         };
-        await ApiService.saveUser(updatedUser, uid);
+        await ApiService.saveUser(updatedUser, username);
         setMessage({ type: 'success', text: 'Profil berhasil diperbarui!' });
         onUpdate();
       }

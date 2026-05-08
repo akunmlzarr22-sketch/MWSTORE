@@ -64,24 +64,43 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 }
 
 export const ApiService = {
+  // User Local Storage Helpers
+  _getLocalUsers: (): UserAccount[] => {
+    const users = localStorage.getItem('mwstore_users');
+    return users ? JSON.parse(users) : [];
+  },
+
+  _saveLocalUsers: (users: UserAccount[]) => {
+    localStorage.setItem('mwstore_users', JSON.stringify(users));
+  },
+
   // Get user profile
   getUser: async (uid: string): Promise<UserAccount | null> => {
-    try {
-      const userDoc = await getDoc(doc(db, 'users', uid));
-      return userDoc.exists() ? userDoc.data() as UserAccount : null;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, `users/${uid}`);
-      return null;
-    }
+    const users = ApiService._getLocalUsers();
+    // Assuming uid is username for local storage if not using Firebase Auth
+    return users.find(u => u.username === uid) || null;
   },
 
   // Save/Update user profile
   saveUser: async (user: UserAccount, uid: string) => {
-    try {
-      await setDoc(doc(db, 'users', uid), user, { merge: true });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `users/${uid}`);
+    const users = ApiService._getLocalUsers();
+    const index = users.findIndex(u => u.username === uid);
+    if (index !== -1) {
+      users[index] = { ...users[index], ...user };
+    } else {
+      users.push(user);
     }
+    ApiService._saveLocalUsers(users);
+  },
+
+  // Get all users (Admin only)
+  getUsers: async (): Promise<UserAccount[]> => {
+    return ApiService._getLocalUsers();
+  },
+
+  // Helper to save whole list
+  saveUsers: (users: UserAccount[]) => {
+    ApiService._saveLocalUsers(users);
   },
 
   // Orders
@@ -153,7 +172,10 @@ export const ApiService = {
   getProducts: async (): Promise<any[]> => {
     try {
       const querySnapshot = await getDocs(collection(db, 'products'));
-      return querySnapshot.docs.map(d => d.data());
+      // Filter out deleted products in JS just in case soft delete was used
+      return querySnapshot.docs
+        .map(d => d.data())
+        .filter(p => !p.deleted);
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, 'products');
       return [];
@@ -162,6 +184,7 @@ export const ApiService = {
 
   saveProduct: async (product: any) => {
     try {
+      console.log('Saving product:', product);
       await setDoc(doc(db, 'products', product.id), product);
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `products/${product.id}`);
@@ -170,7 +193,9 @@ export const ApiService = {
 
   deleteProduct: async (productId: string) => {
     try {
-      await setDoc(doc(db, 'products', productId), { deleted: true }, { merge: true }); // Prefer soft delete
+      // Use real delete for better UX as rules allow it
+      const { deleteDoc } = await import('firebase/firestore');
+      await deleteDoc(doc(db, 'products', productId));
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `products/${productId}`);
     }
@@ -208,32 +233,16 @@ export const ApiService = {
   },
 
   updateBalanceByUsername: async (username: string, newBalance: number) => {
-    try {
-      const q = query(collection(db, 'users'), where('username', '==', username), limit(1));
-      const querySnapshot = await getDocs(q);
-      if (!querySnapshot.empty) {
-        const userDoc = querySnapshot.docs[0];
-        await updateDoc(doc(db, 'users', userDoc.id), { balance: newBalance });
-        return true;
-      }
-      return false;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/by-username/${username}`);
-      return false;
+    const users = ApiService._getLocalUsers();
+    const index = users.findIndex(u => u.username === username);
+    if (index !== -1) {
+      users[index].balance = newBalance;
+      ApiService._saveLocalUsers(users);
+      return true;
     }
+    return false;
   },
 
-  // Get all users (Admin only)
-  getUsers: async (): Promise<UserAccount[]> => {
-    try {
-      const q = query(collection(db, 'users'));
-      const querySnapshot = await getDocs(q);
-      return querySnapshot.docs.map(d => d.data() as UserAccount);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'users');
-      return [];
-    }
-  },
 
   // Maintenance
   listenToSettings: (callback: (settings: any) => void) => {
