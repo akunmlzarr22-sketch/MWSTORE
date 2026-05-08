@@ -1,8 +1,10 @@
 
 import React, { useState } from 'react';
-import { ShoppingBag, Lock, User, ShieldCheck, ArrowRight, Loader2, Eye, EyeOff, Smartphone, Mail, Hash } from 'lucide-react';
+import { ShoppingBag, Lock, User, ShieldCheck, ArrowRight, Loader2, Eye, EyeOff, Smartphone, Mail, Hash, Chrome } from 'lucide-react';
 import { UserRole, UserAccount } from '../types';
 import { ApiService } from '../services/apiService';
+import { APP_CONFIG } from '../config';
+import { signInWithPopup, auth as firebaseAuth, googleProvider } from '../lib/firebase';
 
 interface LoginProps {
   onLogin: (role: UserRole, username: string) => void;
@@ -24,6 +26,35 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const handleGoogleLogin = async () => {
+    setError('');
+    setIsLoading(true);
+    try {
+      const result = await signInWithPopup(firebaseAuth, googleProvider);
+      const user = result.user;
+      
+      // Check if user exists in Firestore
+      const userData = await ApiService.getUser(user.uid);
+      if (!userData) {
+        // Create user in Firestore
+        const newAccount: UserAccount = {
+          username: user.displayName || user.email?.split('@')[0] || 'User',
+          email: user.email || undefined,
+          role: 'user',
+          balance: 0,
+        };
+        await ApiService.saveUser(newAccount, user.uid);
+        onLogin('user', newAccount.username);
+      } else {
+        onLogin(userData.role, userData.username);
+      }
+    } catch (err: any) {
+      setError('Gagal Login dengan Google: ' + err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -32,6 +63,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
     setTimeout(() => {
       if (mode === 'login') {
         if (role === 'admin') {
+          // Hardcoded admin for now, but we can make it more flexible later
           if (username === '2284400' && password === 'EL1W8') {
             onLogin('admin', username);
           } else {
@@ -80,7 +112,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
             
             // Redirect to WhatsApp
             const message = window.encodeURIComponent(`Halo Admin, saya ingin meminta kode OTP untuk reset password.\n\nUsername: ${user.username}\nWA/Email: ${phone}`);
-            window.open(`https://wa.me/6283845890648?text=${message}`, '_blank');
+            window.open(`https://wa.me/${APP_CONFIG.admin.whatsapp}?text=${message}`, '_blank');
             
             setIsOtpSent(true);
             setError('');
@@ -281,6 +313,29 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
                 </>
               )}
             </button>
+
+            {mode === 'login' && role === 'user' && (
+              <div className="relative py-4">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-gray-100"></div>
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-white px-4 text-gray-400 font-black tracking-widest">ATAU</span>
+                </div>
+              </div>
+            )}
+
+            {mode === 'login' && role === 'user' && (
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                disabled={isLoading}
+                className="w-full bg-white border-2 border-gray-100 text-gray-700 py-4 rounded-2xl font-black uppercase tracking-widest text-xs flex items-center justify-center gap-3 hover:bg-gray-50 transition-all active:scale-[0.98] disabled:opacity-70"
+              >
+                <Chrome className="w-5 h-5 text-red-500" />
+                Masuk dengan Google
+              </button>
+            )}
           </form>
 
           <div className="p-6 bg-gray-50 border-t text-center">

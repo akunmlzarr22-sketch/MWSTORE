@@ -1,0 +1,115 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Account",
+      "description": "User profile and account information",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "balance": { "type": "number" },
+        "currentOtp": { "type": "string" },
+        "otpExpiry": { "type": "string" }
+      },
+      "required": ["username", "role", "balance"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Store products available for purchase",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "price": { "type": "number" },
+        "category": { "type": "string" },
+        "image": { "type": "string" },
+        "rating": { "type": "number" },
+        "stock": { "type": "number" },
+        "discount": { "type": "number" },
+        "productType": { "type": "string", "enum": ["Duplikat", "Unik"] },
+        "inventory": { "type": "array", "items": { "type": "string" } },
+        "additionalImages": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "name", "price", "category", "stock"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Store customer orders",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "date": { "type": "string" },
+        "status": { "type": "string", "enum": ["Pending", "Proses", "Selesai", "Dibatalkan"] },
+        "paymentMethod": { "type": "string" },
+        "username": { "type": "string" }
+      },
+      "required": ["id", "items", "totalAmount", "date", "status", "paymentMethod", "username"]
+    },
+    "TopUp": {
+      "title": "TopUp Transaction",
+      "description": "Store balance top-up requests",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "status": { "type": "string", "enum": ["Pending", "Selesai"] }
+      },
+      "required": ["id", "username", "amount", "date", "status"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "In-app communication messages",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sender": { "type": "string" },
+        "recipient": { "type": "string" },
+        "content": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "read": { "type": "boolean" }
+      },
+      "required": ["id", "sender", "recipient", "content", "timestamp", "read"]
+    },
+    "GlobalSettings": {
+      "title": "Global Settings",
+      "description": "App-wide settings",
+      "type": "object",
+      "properties": {
+        "maintenanceMode": { "type": "boolean" }
+      }
+    }
+  },
+  "firestore": {
+    "users": {
+      "schema": "User",
+      "description": "Authenticated user accounts"
+    },
+    "products": {
+      "schema": "Product",
+      "description": "Product catalog"
+    },
+    "orders": {
+      "schema": "Order",
+      "description": "User purchases"
+    },
+    "topups": {
+      "schema": "TopUp",
+      "description": "Balance top-up requests"
+    },
+    "messages": {
+      "schema": "Message",
+      "description": "Customer service chats"
+    },
+    "settings": {
+      "schema": "GlobalSettings",
+      "description": "App configuration"
+    }
+  }
+}

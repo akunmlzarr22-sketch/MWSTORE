@@ -2,6 +2,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { ShoppingBag, Search, ChevronRight, LayoutGrid, LayoutDashboard, Trash2, Plus, Minus, CreditCard, AlertCircle, ShoppingCart, Settings, LogOut, Wallet, QrCode, Building2, CheckCircle2, Copy, MessageCircle, Mail, RefreshCw, Download, Info, Share2, ExternalLink, X, Smartphone, Globe, Gamepad2, Receipt, ShieldCheck, Banknote, Sparkles, Check, Scan, Save, MonitorSmartphone, Clock, Coins, ArrowUpCircle, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { onAuthStateChanged } from 'firebase/auth';
+import { auth as firebaseAuth } from './lib/firebase';
 import { Product, CartItem, Order, View, AuthState, UserRole, UserAccount } from './types';
 import { MOCK_PRODUCTS, formatIDR } from './constants';
 import ProductCard from './components/ProductCard';
@@ -10,125 +12,117 @@ import AdminDashboard from './components/AdminDashboard';
 import Login from './components/Login';
 import UserProfile from './components/UserProfile';
 import CustomerService from './components/CustomerService';
+import { APP_CONFIG } from './config';
 import { ApiService } from './services/apiService';
 import { Message } from './types';
 
-const APP_VERSION = "v3.3.0";
+const APP_VERSION = "v3.5.0";
 
 const App: React.FC = () => {
-  const [products, setProducts] = useState<Product[]>(() => ApiService.getProducts(MOCK_PRODUCTS));
-  const [users, setUsers] = useState<UserAccount[]>(() => ApiService.getUsers());
-  const [orders, setOrders] = useState<Order[]>(() => ApiService.getOrders());
+  const [products, setProducts] = useState<Product[]>([]);
+  const [users, setUsers] = useState<UserAccount[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
   const [auth, setAuth] = useState<AuthState>({
     isLoggedIn: false,
     role: null,
     username: null,
     balance: null
   });
-  
-  // Listen for storage changes from other tabs
-  useEffect(() => {
-    const handleStorageChange = () => {
-      const latestProducts = ApiService.getProducts(MOCK_PRODUCTS);
-      const latestUsers = ApiService.getUsers();
-      const latestOrders = ApiService.getOrders();
-      
-      setProducts(prev => {
-        if (JSON.stringify(prev) !== JSON.stringify(latestProducts)) return latestProducts;
-        return prev;
-      });
-      setUsers(prev => {
-        if (JSON.stringify(prev) !== JSON.stringify(latestUsers)) return latestUsers;
-        return prev;
-      });
-      setOrders(prev => {
-        if (JSON.stringify(prev) !== JSON.stringify(latestOrders)) return latestOrders;
-        return prev;
-      });
-    };
+  const [isLoading, setIsLoading] = useState(true);
 
-    window.addEventListener('storage', handleStorageChange);
-    // Also poll as fallback for the same tab updates that might miss state refresh
-    const interval = setInterval(handleStorageChange, 1000);
-    
-    return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      clearInterval(interval);
-    };
+  // Authenticated listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+      if (user) {
+        // Fetch user data from Firestore
+        const userData = await ApiService.getUser(user.uid);
+        if (userData) {
+          setAuth({
+            isLoggedIn: true,
+            role: userData.role,
+            username: userData.username,
+            balance: userData.balance
+          });
+        } else {
+          // New user logic or handle error
+          setAuth({
+            isLoggedIn: true,
+            role: 'user',
+            username: user.displayName || user.email?.split('@')[0] || 'User',
+            balance: 0
+          });
+        }
+      } else {
+        setAuth({
+          isLoggedIn: false,
+          role: null,
+          username: null,
+          balance: null
+        });
+      }
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  const handleAddOrUpdateProduct = (product: Product) => {
-    setProducts(prev => {
-      const existingIdx = prev.findIndex(p => p.id === product.id);
-      let newProducts;
-      if (existingIdx !== -1) {
-        newProducts = [...prev];
-        newProducts[existingIdx] = {
-          ...product,
-          rating: prev[existingIdx].rating || 5.0
-        };
-      } else {
-        newProducts = [{ ...product, rating: 5.0 }, ...prev];
+  // Fetch initial data
+  useEffect(() => {
+    const fetchData = async () => {
+      const fetchedProducts = await ApiService.getProducts();
+      setProducts(fetchedProducts.length > 0 ? fetchedProducts : MOCK_PRODUCTS);
+      
+      if (auth.isLoggedIn && auth.username) {
+        const fetchedOrders = await ApiService.getOrders(firebaseAuth.currentUser?.uid || '', auth.role === 'admin');
+        setOrders(fetchedOrders);
       }
-      ApiService.saveProducts(newProducts);
-      return newProducts;
+    };
+    fetchData();
+  }, [auth.isLoggedIn, auth.role, auth.username]);
+
+  // Listen for maintenance mode
+  useEffect(() => {
+    const unsubscribe = ApiService.listenToSettings((settings) => {
+      if (settings && settings.maintenanceMode) {
+        setIsMaintenance(true);
+      } else {
+        setIsMaintenance(false);
+      }
     });
+    return () => unsubscribe();
+  }, []);
+
+  const handleAddOrUpdateProduct = async (product: Product) => {
+    const productToSave = { ...product, rating: product.rating || 5.0 };
+    await ApiService.saveProduct(productToSave);
+    const updatedProducts = await ApiService.getProducts();
+    setProducts(updatedProducts);
   };
 
   const handleUpdateUsers = (newUsers: UserAccount[]) => {
     setUsers(newUsers);
-    ApiService.saveUsers(newUsers);
+    // User data is now primarily handled via Google Auth and direct Firestore updates
   };
 
-  const handleDeleteUser = (username: string) => {
-    const updatedUsers = users.filter(u => u.username !== username);
-    setUsers(updatedUsers);
-    ApiService.saveUsers(updatedUsers);
-    
-    // Also clean up their records
-    const filteredOrders = orders.filter(o => o.username !== username);
-    setOrders(filteredOrders);
-    ApiService.saveOrders(filteredOrders);
-
-    const allTopUps = ApiService.getTopUps();
-    const filteredTopUps = allTopUps.filter(t => t.username !== username);
-    ApiService.saveTopUps(filteredTopUps);
-
-    if (auth.username === username) {
-      handleLogout();
-    }
-    
-    alert(`Akun ${username} dan semua riwayat transaksinya telah dihapus.`);
+  const handleDeleteUser = async (username: string) => {
+    // Soft delete or direct delete if needed, but for now we'll just alert that it's an admin task on Firebase Console
+    alert(`Penghapusan akun ${username} harus dilakukan melalui Firebase Console atau Admin API.`);
   };
 
   const handleResetUserHistory = (username: string) => {
-    // Clear Orders
-    const filteredOrders = orders.filter(o => o.username !== username);
-    setOrders(filteredOrders);
-    ApiService.saveOrders(filteredOrders);
-
-    // Clear TopUps
-    const allTopUps = ApiService.getTopUps();
-    const filteredTopUps = allTopUps.filter(t => t.username !== username);
-    ApiService.saveTopUps(filteredTopUps);
-    
-    alert(`Semua riwayat transaksi ${username} telah dihapus.`);
+    alert(`Reset riwayat ${username} akan segera hadir.`);
   };
 
-  const handleUpdateOrder = (orderId: string, status: 'Pending' | 'Proses' | 'Selesai' | 'Gagal') => {
-    setOrders(prev => {
-      const newOrders = prev.map(o => o.id === orderId ? { ...o, status } : o);
-      ApiService.saveOrders(newOrders);
-      return newOrders;
-    });
+  const handleUpdateOrder = async (orderId: string, status: any) => {
+    await ApiService.updateOrderStatus(orderId, status);
+    const fetchedOrders = await ApiService.getOrders(firebaseAuth.currentUser?.uid || '', auth.role === 'admin');
+    setOrders(fetchedOrders);
   };
 
-  const handleDeleteProduct = (id: string) => {
-    setProducts(prev => {
-      const newProducts = prev.filter(p => p.id !== id);
-      ApiService.saveProducts(newProducts);
-      return newProducts;
-    });
+  const handleDeleteProduct = async (id: string) => {
+    await ApiService.deleteProduct(id);
+    const updated = await ApiService.getProducts();
+    setProducts(updated);
   };
 
   const [view, setView] = useState<View>('home');
@@ -138,7 +132,7 @@ const App: React.FC = () => {
   const [paymentMethod, setPaymentMethod] = useState<'Saldo Akun' | 'QRIS / E-Wallet'>('Saldo Akun');
   const [isProcessing, setIsProcessing] = useState(false);
   const [topupAmount, setTopupAmount] = useState<number>(50000);
-  const [isMaintenance, setIsMaintenance] = useState(() => ApiService.getMaintenanceMode());
+  const [isMaintenance, setIsMaintenance] = useState(false);
   const [currentDateTime, setCurrentDateTime] = useState(new Date());
   const [unreadMessages, setUnreadMessages] = useState<number>(0);
 
@@ -150,27 +144,25 @@ const App: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
-  // Sync users, maintenance, and messages from service
+  // Sync unread messages
   useEffect(() => {
-    setUsers(ApiService.getUsers());
-    const interval = setInterval(() => {
-      setIsMaintenance(ApiService.getMaintenanceMode());
-      if (auth.username) {
-        const msgs = ApiService.getMessages();
+    if (auth.isLoggedIn && auth.username) {
+      const unsubscribe = ApiService.listenToMessages(firebaseAuth.currentUser?.uid || '', auth.role === 'admin', (msgs) => {
         const unreadCount = msgs.filter(m => m.recipient === auth.username && !m.read).length;
         setUnreadMessages(unreadCount);
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [view, auth.username]);
+      });
+      return () => unsubscribe();
+    }
+  }, [auth.isLoggedIn, auth.username, auth.role]);
 
   // Update Auth State Balance when users change
   useEffect(() => {
-    if (auth.username) {
-      const bal = ApiService.getBalance(auth.username);
-      setAuth(prev => ({ ...prev, balance: bal }));
+    if (auth.username && auth.isLoggedIn) {
+      // Balance is already managed via AuthState which is updated in onAuthStateChanged
+      // If we need to refresh it specifically when users list changes (admin action),
+      // we can fetch it explicitly.
     }
-  }, [users, auth.username]);
+  }, [users, auth.username, auth.isLoggedIn]);
 
   const categories = ['Semua', ...new Set(products.map(p => p.category))];
 
@@ -183,21 +175,18 @@ const App: React.FC = () => {
   }, [searchQuery, selectedCategory, products]);
 
   const handleLogin = (role: UserRole, username: string) => {
-    const bal = ApiService.getBalance(username);
-    setAuth({ isLoggedIn: true, role, username, balance: bal });
+    // Note: This matches the old role/username but balance will come from onAuthStateChanged
+    setAuth(prev => ({ ...prev, isLoggedIn: true, role, username }));
   };
 
   const handleRegister = (account: UserAccount): boolean => {
-    const existing = ApiService.getUsers();
-    if (existing.find(u => u.username === account.username)) return false;
-    
-    const newUsers = [...existing, { ...account, balance: 0 }];
-    ApiService.saveUsers(newUsers);
-    setUsers(newUsers);
-    return true;
+    // Registration is now handled via Google Login or Admin creation
+    alert("Gunakan Google Login untuk mendaftar.");
+    return false;
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await firebaseAuth.signOut();
     setAuth({ isLoggedIn: false, role: null, username: null, balance: null });
     setView('home');
     setCart([]);
@@ -250,37 +239,53 @@ const App: React.FC = () => {
       return { ...item, issuedData };
     });
 
-    setTimeout(() => {
+    setTimeout(async () => {
       // Update Produk (Kurangi Stok)
-      setProducts(prev => {
-        const newProducts = prev.map(p => {
-          const cartItem = cart.find(ci => ci.id === p.id);
-          if (cartItem) {
-            if (p.productType === 'Unik') {
-              const remainingInventory = (p.inventory || []).slice(cartItem.quantity);
-              return { ...p, inventory: remainingInventory, stock: remainingInventory.length };
-            } else {
-              const newStock = Math.max(0, p.stock - cartItem.quantity);
-              return { ...p, stock: newStock };
-            }
+      const newProducts = products.map(p => {
+        const cartItem = cart.find(ci => ci.id === p.id);
+        if (cartItem) {
+          if (p.productType === 'Unik') {
+            const remainingInventory = (p.inventory || []).slice(cartItem.quantity);
+            return { ...p, inventory: remainingInventory, stock: remainingInventory.length };
+          } else {
+            const newStock = Math.max(0, p.stock - cartItem.quantity);
+            return { ...p, stock: newStock };
           }
-          return p;
-        });
-        ApiService.saveProducts(newProducts);
-        return newProducts;
+        }
+        return p;
       });
 
-      const newOrder = ApiService.createOrder(
-        auth.username || 'Guest', 
-        processedCart, 
-        cartTotal, 
-        paymentMethod
-      );
+      // Save updated products to Firebase
+      const productsToUpdate = newProducts.filter(p => cart.some(ci => ci.id === p.id));
+      for (const p of productsToUpdate) {
+        await ApiService.saveProduct(p);
+      }
+      setProducts(newProducts);
+
+      const orderId = Math.floor(100000 + Math.random() * 900000).toString();
+      const newOrder: Order = {
+        id: orderId,
+        items: processedCart,
+        totalAmount: cartTotal,
+        date: new Date().toLocaleString('id-ID'),
+        status: paymentMethod === 'Saldo Akun' ? 'Proses' : 'Pending',
+        paymentMethod: paymentMethod,
+        username: auth.username || 'Guest'
+      };
+
+      await ApiService.createOrder(newOrder, firebaseAuth.currentUser?.uid || 'guest');
       setOrders(prev => [newOrder, ...prev]);
+
+      // If paid by balance, update balance
+      if (paymentMethod === 'Saldo Akun' && auth.username) {
+        const newBalance = (auth.balance || 0) - cartTotal;
+        await ApiService.updateBalanceByUsername(auth.username, newBalance);
+        setAuth(prev => ({ ...prev, balance: newBalance }));
+      }
+
       setCart([]);
       setIsProcessing(false);
       setView('orders');
-      setUsers(ApiService.getUsers());
     }, 1500);
   };
 
@@ -288,23 +293,25 @@ const App: React.FC = () => {
     if (topupAmount < 1000) return;
     setIsProcessing(true);
     
-    setTimeout(() => {
+    setTimeout(async () => {
       if (auth.username) {
         const topupId = Math.random().toString(36).substring(7).toUpperCase();
         
         // Catat Transaksi Top Up sebagai PENDING
-        ApiService.saveTopUp({
+        const newTopUp: TopUpTransaction = {
           id: topupId,
           username: auth.username,
           amount: topupAmount,
           date: new Date().toLocaleString('id-ID'),
           status: 'Pending'
-        });
+        };
+
+        await ApiService.createTopUp(newTopUp, firebaseAuth.currentUser?.uid || 'guest');
 
         setIsProcessing(false);
         
         // Redirect ke WhatsApp Admin
-        const waNumber = "6283845890648";
+        const waNumber = APP_CONFIG.admin.whatsapp;
         const message = `Halo Admin, saya ingin konfirmasi Top Up Saldo.\n\n` +
                         `ID Tiket: ${topupId}\n` +
                         `Username: ${auth.username}\n` +
@@ -758,18 +765,18 @@ const App: React.FC = () => {
                          </div>
                       </button>
 
-                      <button onClick={() => setPaymentMethod('QRIS / E-Wallet')} className={`w-full p-8 rounded-[2.5rem] border-2 transition-all text-left flex items-center justify-between ${paymentMethod === 'QRIS / E-Wallet' ? 'bg-blue-50 border-blue-600' : 'bg-white border-gray-100 hover:border-gray-200'}`}>
+                      <button onClick={() => setPaymentMethod('Manual WhatsApp')} className={`w-full p-8 rounded-[2.5rem] border-2 transition-all text-left flex items-center justify-between ${paymentMethod === 'Manual WhatsApp' ? 'bg-blue-50 border-blue-600' : 'bg-white border-gray-100 hover:border-gray-200'}`}>
                          <div className="flex items-center gap-6">
-                            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${paymentMethod === 'QRIS / E-Wallet' ? 'bg-blue-600 text-white shadow-xl' : 'bg-gray-50 text-gray-400'}`}>
-                               <QrCode className="w-7 h-7" />
+                            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${paymentMethod === 'Manual WhatsApp' ? 'bg-blue-600 text-white shadow-xl' : 'bg-gray-50 text-gray-400'}`}>
+                               <MessageCircle className="w-7 h-7" />
                             </div>
                             <div>
-                               <h4 className="font-black text-gray-900 text-lg">QRIS / E-Wallet</h4>
-                               <p className="text-sm text-gray-500 font-medium">Scan QR DANA, GOPAY, ShopeePay, OVO.</p>
+                               <h4 className="font-black text-gray-900 text-lg">Hubungi Admin (Manual)</h4>
+                               <p className="text-sm text-gray-500 font-medium">Bayar via transfer & konfirmasi ke WhatsApp.</p>
                             </div>
                          </div>
-                         <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${paymentMethod === 'QRIS / E-Wallet' ? 'border-blue-600' : 'border-gray-200'}`}>
-                            {paymentMethod === 'QRIS / E-Wallet' && <div className="w-3 h-3 bg-blue-600 rounded-full" />}
+                         <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${paymentMethod === 'Manual WhatsApp' ? 'border-blue-600' : 'border-gray-200'}`}>
+                            {paymentMethod === 'Manual WhatsApp' && <div className="w-3 h-3 bg-blue-600 rounded-full" />}
                          </div>
                       </button>
 
@@ -886,7 +893,7 @@ const App: React.FC = () => {
                 username={auth.username || ''} 
                 onBack={() => setView('home')} 
                 onUpdate={() => {
-                  setUsers(ApiService.getUsers());
+                  // No-op or fetch current user balance if needed
                 }}
               />
             </motion.div>

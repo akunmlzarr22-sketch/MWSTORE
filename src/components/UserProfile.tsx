@@ -5,6 +5,8 @@ import { motion } from 'motion/react';
 import { UserAccount } from '../types';
 import { ApiService } from '../services/apiService';
 
+import { auth as firebaseAuth } from '../lib/firebase';
+
 interface UserProfileProps {
   username: string;
   onBack: () => void;
@@ -15,46 +17,40 @@ const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onUpdate })
   const [user, setUser] = useState<UserAccount | null>(null);
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
   useEffect(() => {
-    const allUsers = ApiService.getUsers();
-    const currentUser = allUsers.find(u => u.username === username);
-    if (currentUser) {
-      setUser(currentUser);
-      setEmail(currentUser.email || '');
-      setPhone(currentUser.phone || '');
-      setPassword(currentUser.password || '');
-    }
+    const fetchUser = async () => {
+      const uid = firebaseAuth.currentUser?.uid;
+      if (uid) {
+        const currentUser = await ApiService.getUser(uid);
+        if (currentUser) {
+          setUser(currentUser);
+          setEmail(currentUser.email || '');
+          setPhone(currentUser.phone || '');
+        }
+      }
+    };
+    fetchUser();
   }, [username]);
 
   const handleSave = async () => {
     setIsSaving(true);
     setMessage(null);
 
-    // Simulate network delay
-    await new Promise(resolve => setTimeout(resolve, 800));
-
     try {
-      const allUsers = ApiService.getUsers();
-      const updatedUsers = allUsers.map(u => {
-        if (u.username === username) {
-          return {
-            ...u,
-            email,
-            phone,
-            password
-          };
-        }
-        return u;
-      });
-
-      ApiService.saveUsers(updatedUsers);
-      setMessage({ type: 'success', text: 'Profil berhasil diperbarui!' });
-      onUpdate();
+      const uid = firebaseAuth.currentUser?.uid;
+      if (uid && user) {
+        const updatedUser: UserAccount = {
+          ...user,
+          email,
+          phone
+        };
+        await ApiService.saveUser(updatedUser, uid);
+        setMessage({ type: 'success', text: 'Profil berhasil diperbarui!' });
+        onUpdate();
+      }
     } catch (err) {
       setMessage({ type: 'error', text: 'Gagal memperbarui profil.' });
     } finally {
@@ -140,26 +136,6 @@ const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onUpdate })
               </div>
            </div>
 
-           <div className="space-y-2">
-              <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Ganti Password</label>
-              <div className="relative group">
-                 <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 group-focus-within:text-blue-600 transition-colors" />
-                 <input 
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full bg-gray-50 border-2 border-transparent rounded-2xl py-4 pl-12 pr-12 focus:border-blue-500/20 focus:bg-white focus:ring-4 focus:ring-blue-500/5 transition-all outline-none font-bold text-gray-900"
-                 />
-                 <button 
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-blue-600 transition-colors"
-                 >
-                   {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                 </button>
-              </div>
-           </div>
-
            <div className="pt-4">
               <button 
                 onClick={handleSave}
@@ -191,25 +167,6 @@ const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onUpdate })
               <span className="text-[8px] font-black text-gray-400 uppercase tracking-tighter">Keamanan</span>
               <span className="text-[10px] font-bold text-green-600 uppercase">Enskripsi AES</span>
            </div>
-          {/* INFO DEVELOPER (Hidden by default unless specifically needed) */}
-          <div className="mt-10 pt-10 border-t border-gray-50">
-             <div className="opacity-10 hover:opacity-100 transition-opacity">
-                <button 
-                  onClick={() => {
-                    const latestUsers = ApiService.getUsers();
-                    const updatedUsers = latestUsers.map(u => 
-                      u.username === username ? { ...u, role: 'admin' as const } : u
-                    );
-                    ApiService.saveUsers(updatedUsers);
-                    onUpdate();
-                    alert('Status Admin Berhasil Diaktifkan!');
-                  }}
-                  className="text-[8px] font-black text-gray-300 uppercase tracking-widest"
-                >
-                  Enable Dev Admin Mode
-                </button>
-             </div>
-          </div>
         </div>
       </div>
     </div>

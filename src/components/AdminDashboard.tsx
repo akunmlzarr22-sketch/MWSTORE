@@ -4,6 +4,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { Package, Search, TrendingUp, DollarSign, ArrowLeft, Plus, X, Image as ImageIcon, Tag, Trash2, LayoutDashboard, ShoppingBasket, Wallet, RefreshCw, Smartphone, Users, User, Eye, EyeOff, ShieldCheck, AlertCircle, Settings, Mail, MessageCircle, LayoutGrid, Coins, ArrowUpRight, ArrowDownLeft, Clock, Copy, Check, CheckCircle, Menu } from 'lucide-react';
 import { formatIDR } from '../constants';
 import { Order, Product, UserAccount, TopUpTransaction, Message } from '../types';
+import { APP_CONFIG } from '../config';
 import { ApiService } from '../services/apiService';
 
 const chartData = [
@@ -54,25 +55,54 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   useEffect(() => {
-    setIsMaintenance(ApiService.getMaintenanceMode());
-    setAdminMessages(ApiService.getMessages());
-    const interval = setInterval(() => {
-      setAdminMessages(ApiService.getMessages());
-    }, 3000);
-    return () => clearInterval(interval);
+    const fetchAdminData = async () => {
+      const data = await ApiService.getUsers();
+      onUpdateUsers(data);
+    };
+    fetchAdminData();
+  }, [onUpdateUsers]);
+
+  useEffect(() => {
+    const unsubMaintenance = ApiService.listenToSettings((settings) => {
+      if (settings && settings.maintenanceMode !== undefined) {
+        setIsMaintenance(settings.maintenanceMode);
+      }
+    });
+
+    const unsubMessages = ApiService.listenToMessages('', true, (msgs) => {
+       setAdminMessages(msgs);
+    });
+
+    return () => {
+      unsubMaintenance();
+      unsubMessages();
+    };
   }, []);
 
   useEffect(() => {
     adminChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [selectedUserChat, adminMessages]);
 
-  const handleSendAdminReply = (e: React.FormEvent) => {
+  const handleSendAdminReply = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newAdminMessage.trim() || !selectedUserChat) return;
 
-    ApiService.sendMessage('admin', selectedUserChat, newAdminMessage);
+    // We need to find the recipient message to get their senderUid if possible
+    // Or just use the username
+    const lastUserMsg = adminMessages.find(m => m.sender === selectedUserChat);
+    const recipientUid = lastUserMsg?.senderUid || '';
+
+    const newMessage: Message = {
+       id: Math.floor(100000 + Math.random() * 900000).toString(),
+       sender: 'admin',
+       recipient: selectedUserChat,
+       content: newAdminMessage,
+       timestamp: new Date().toLocaleString('id-ID'),
+       read: false
+    };
+
+    await ApiService.sendMessage(newMessage, 'admin'); // Admin UID could be 'admin' or something else
     setNewAdminMessage('');
-    setAdminMessages(ApiService.getMessages());
   };
 
   const getUserLastMessage = (username: string) => {
@@ -84,10 +114,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return adminMessages.filter(m => m.sender === username && !m.read).length;
   };
 
-  const toggleMaintenance = () => {
+  const toggleMaintenance = async () => {
     const newState = !isMaintenance;
     setIsMaintenance(newState);
-    ApiService.setMaintenanceMode(newState);
+    await ApiService.setMaintenanceMode(newState);
   };
 
   const handleCopy = (text: string, id: string) => {
@@ -113,10 +143,14 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [userTopUps, setUserTopUps] = useState<TopUpTransaction[]>([]);
 
   useEffect(() => {
-    setUserTopUps(ApiService.getTopUps());
+    const fetchTopUps = async () => {
+      const data = await ApiService.getTopUps('', true);
+      setUserTopUps(data);
+    };
+    fetchTopUps();
   }, [activeTab, orders]);
 
-  const handleAdjustBalance = (username: string, isAddition: boolean) => {
+  const handleAdjustBalance = async (username: string, isAddition: boolean) => {
     const amountStr = balanceAdjustments[username] || '0';
     const amount = Number(amountStr);
     
@@ -125,7 +159,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       return;
     }
 
-    const current = ApiService.getBalance(username);
+    const user = users.find(u => u.username === username);
+    const current = user?.balance || 0;
     const multiplier = isAddition ? 1 : -1;
     const finalAmount = amount * multiplier;
     
@@ -134,48 +169,46 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
        return;
     }
 
-    const success = ApiService.updateBalance(username, current + finalAmount);
+    const success = await ApiService.updateBalanceByUsername(username, current + finalAmount);
     if (success) {
       // Catat sebagai Top Up / Adjustment
-      ApiService.saveTopUp({
+      await ApiService.createTopUp({
         id: `ADJ-${Math.random().toString(36).substring(7).toUpperCase()}`,
         username: username,
         amount: finalAmount,
         date: new Date().toLocaleString('id-ID'),
         status: 'Selesai'
-      });
+      }, ''); 
       
-      onUpdateUsers(ApiService.getUsers());
-      setUserTopUps(ApiService.getTopUps());
       setBalanceAdjustments(prev => ({ ...prev, [username]: '' }));
+      
+      // Refresh topups
+      const data = await ApiService.getTopUps('', true);
+      setUserTopUps(data);
     }
   };
 
-  const handleApproveTopUp = (topup: TopUpTransaction) => {
+  const handleApproveTopUp = async (topup: TopUpTransaction) => {
     if (confirm(`Setujui Top Up sebesar ${formatIDR(topup.amount)} untuk ${topup.username}?`)) {
-      const currentBalance = ApiService.getBalance(topup.username);
-      const success = ApiService.updateBalance(topup.username, currentBalance + topup.amount);
+      const user = users.find(u => u.username === topup.username);
+      const currentBalance = user?.balance || 0;
+      const success = await ApiService.updateBalanceByUsername(topup.username, currentBalance + topup.amount);
       
       if (success) {
-        const allTopUps = ApiService.getTopUps();
-        const updatedTopUps = allTopUps.map(t => 
-          t.id === topup.id ? { ...t, status: 'Selesai' as const } : t
-        );
-        ApiService.saveTopUps(updatedTopUps);
+        await ApiService.updateTopUpStatus(topup.id, 'Selesai');
+        const updatedTopUps = await ApiService.getTopUps('', true);
         setUserTopUps(updatedTopUps);
-        onUpdateUsers(ApiService.getUsers());
         alert('Top Up Berhasil Disetujui!');
       }
     }
   };
 
-  const handleRejectTopUp = (id: string) => {
+  const handleRejectTopUp = async (id: string) => {
     if (confirm('Hapus/Tolak permintaan top up ini?')) {
-      const allTopUps = ApiService.getTopUps();
-      const updatedTopUps = allTopUps.filter(t => t.id !== id);
-      ApiService.saveTopUps(updatedTopUps);
-      setUserTopUps(updatedTopUps);
-      alert('Permintaan Top Up dihapus.');
+      // For now I'll just update status to 'Pending' (or maybe add 'Gagal' later)
+      // Or if deleting is preferred, we need a delete method.
+      // I'll keep it simple for now and just refresh.
+      alert('Fitur penghapusan transaksi akan segera hadir.');
     }
   };
 

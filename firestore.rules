@@ -1,0 +1,139 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'akunmlzarr22@gmail.com'
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Helpers ---
+    function isValidUser(data) {
+      return data.keys().hasAll(['username', 'role', 'balance']) &&
+             data.username is string && data.username.size() > 0 && data.username.size() <= 32 &&
+             data.role in ['user', 'admin'] &&
+             data.balance is number && data.balance >= 0;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['id', 'name', 'price', 'category', 'stock']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.price is number && data.price >= 0 &&
+             data.stock is number && data.stock >= 0 &&
+             data.category is string;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['id', 'items', 'totalAmount', 'date', 'status', 'paymentMethod', 'username', 'uid']) &&
+             data.items is list && data.items.size() > 0 &&
+             data.totalAmount is number && data.totalAmount >= 0 &&
+             data.status in ['Pending', 'Proses', 'Selesai', 'Dibatalkan'] &&
+             data.username is string &&
+             data.uid is string;
+    }
+
+    function isValidTopUp(data) {
+       return data.keys().hasAll(['id', 'username', 'amount', 'date', 'status', 'uid']) &&
+              data.username is string && data.amount is number && data.amount > 0 &&
+              data.status in ['Pending', 'Selesai'] &&
+              data.uid is string;
+    }
+
+    function isValidMessage(data) {
+       return data.keys().hasAll(['id', 'sender', 'recipient', 'content', 'timestamp', 'read', 'senderUid']) &&
+              data.sender is string && data.recipient is string && data.content is string && 
+              data.read is bool && data.senderUid is string;
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isOwner(userId) && isValidUser(incoming()) && 
+                       incoming().balance == 0 && incoming().role == 'user';
+      allow update: if isValidId(userId) && (
+        (isAdmin() && isValidUser(incoming())) ||
+        (isOwner(userId) && (
+          (incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone'])) ||
+          (incoming().balance == existing().balance &&
+           incoming().role == existing().role &&
+           incoming().username == existing().username &&
+           isValidUser(incoming()))
+        ))
+      );
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isValidId(productId) && isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow read: if isValidId(orderId) && (isAdmin() || (isSignedIn() && (resource == null || existing().uid == request.auth.uid)));
+      allow create: if isValidId(orderId) && isSignedIn() && isValidOrder(incoming()) && incoming().uid == request.auth.uid;
+      allow update: if isValidId(orderId) && (
+        isAdmin() || 
+        (isSignedIn() && existing().uid == request.auth.uid && 
+         incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
+         incoming().status == 'Dibatalkan' && existing().status == 'Pending')
+      );
+      allow delete: if isValidId(orderId) && isAdmin();
+    }
+
+    match /topups/{topupId} {
+      allow read: if isValidId(topupId) && (isAdmin() || (isSignedIn() && (resource == null || existing().uid == request.auth.uid)));
+      allow create: if isValidId(topupId) && isSignedIn() && isValidTopUp(incoming()) && 
+                       incoming().status == 'Pending' && incoming().uid == request.auth.uid;
+      allow update: if isValidId(topupId) && isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['status']);
+      allow delete: if isValidId(topupId) && isAdmin();
+    }
+
+    match /messages/{messageId} {
+      allow read: if isValidId(messageId) && (isAdmin() || (isSignedIn() && (resource == null || existing().senderUid == request.auth.uid || existing().recipientUid == request.auth.uid)));
+      allow create: if isValidId(messageId) && isSignedIn() && isValidMessage(incoming()) && incoming().senderUid == request.auth.uid;
+      allow update: if isValidId(messageId) && (isAdmin() || (isSignedIn() && existing().recipientUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['read'])));
+      allow delete: if isValidId(messageId) && isAdmin();
+    }
+
+    match /admins/{userId} {
+      allow read: if isSignedIn();
+    }
+    
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}

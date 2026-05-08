@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@google/genai": "^1.34.0",
     "@tailwindcss/vite": "^4.2.4",
+    "firebase": "^12.13.0",
     "lucide-react": "^0.562.0",
     "motion": "^12.38.0",
     "react": "^19.2.3",
@@ -19,8 +21,10 @@
     "tailwindcss": "^4.2.4"
   },
   "devDependencies": {
+    "@firebase/eslint-plugin-security-rules": "^0.0.2",
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "eslint": "^10.3.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }
