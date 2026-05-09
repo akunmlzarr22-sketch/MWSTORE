@@ -32,21 +32,25 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
 
     setTimeout(() => {
       if (mode === 'login') {
+        const user = registeredUsers.find(u => 
+          (u.username.toLowerCase() === username.toLowerCase() || 
+           (u.phone && u.phone === username) || 
+           (u.email && u.email.toLowerCase() === username.toLowerCase())) && 
+          u.password === password
+        );
+
         if (role === 'admin') {
-          // Hardcoded admin for now, but we can make it more flexible later
-          if (username === '2284400' && password === 'EL1W8') {
+          // Check registered users first if they are admin
+          if (user && user.role === 'admin') {
+            onLogin('admin', user.username);
+          } else if (username === '2284400' && password === 'EL1W8') {
+            // Fallback hardcoded admin
             onLogin('admin', username);
           } else {
             setError('Kredensial Admin Salah!');
           }
         } else {
-          // Cari berdasarkan username ATAU phone ATAU email
-          const user = registeredUsers.find(u => 
-            (u.username.toLowerCase() === username.toLowerCase() || 
-             (u.phone && u.phone === username) || 
-             (u.email && u.email.toLowerCase() === username.toLowerCase())) && 
-            u.password === password
-          );
+          // User login
           if (user) {
             onLogin('user', user.username);
           } else {

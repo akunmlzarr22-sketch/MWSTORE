@@ -26,7 +26,7 @@ const App: React.FC = () => {
     username: null,
     balance: null
   });
-  const [isLoading, setIsLoading] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   // Authenticated listener - Updated for Local Storage
   useEffect(() => {
@@ -47,7 +47,18 @@ const App: React.FC = () => {
       }
       setProducts(fetchedProducts);
       
-      const fetchedUsers = await ApiService.getUsers();
+      let fetchedUsers = await ApiService.getUsers();
+      if (fetchedUsers.length === 0) {
+        const initialAdmin: UserAccount = {
+          username: 'admin',
+          password: 'adminpassword',
+          role: 'admin',
+          balance: 999999999,
+          email: 'admin@mwstore.com'
+        };
+        ApiService.saveUsers([initialAdmin]);
+        fetchedUsers = [initialAdmin];
+      }
       setUsers(fetchedUsers);
 
       if (auth.isLoggedIn && auth.username) {
@@ -77,10 +88,9 @@ const App: React.FC = () => {
     setProducts(updatedProducts);
   };
 
-  const handleUpdateUsers = (newUsers: UserAccount[]) => {
+  const handleUpdateUsers = React.useCallback((newUsers: UserAccount[]) => {
     setUsers(newUsers);
-    // User data is now primarily handled via Google Auth and direct Firestore updates
-  };
+  }, []);
 
   const handleDeleteUser = async (username: string) => {
     const newUsers = users.filter(u => u.username !== username);
@@ -413,11 +423,19 @@ const App: React.FC = () => {
 
       <nav className="bg-white/95 backdrop-blur-md border-b sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('home')}>
-            <div className="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg">
-              <ShoppingBag className="w-5 h-5" />
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className="p-2 text-gray-500 hover:text-blue-600 transition-colors"
+            >
+              <Menu className="w-6 h-6" />
+            </button>
+            <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('home')}>
+              <div className="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg">
+                <ShoppingBag className="w-5 h-5" />
+              </div>
+              <span className="text-lg font-black text-gray-900 tracking-tighter">MWSTORE</span>
             </div>
-            <span className="text-lg font-black text-gray-900 tracking-tighter">MWSTORE</span>
           </div>
 
           <div className="flex items-center gap-3">
@@ -429,33 +447,13 @@ const App: React.FC = () => {
                <div className="w-6 h-6 bg-indigo-600 rounded-lg flex items-center justify-center text-white shadow-sm">
                   <Plus className="w-3.5 h-3.5" />
                </div>
-               <div className="flex flex-col items-start text-left">
+               <div className="hidden sm:flex flex-col items-start text-left">
                   <span className="text-[8px] font-black text-indigo-400 uppercase tracking-widest leading-none">Isi Saldo</span>
                   <span className="text-xs font-black text-indigo-700 leading-tight">{formatIDR(auth.balance || 0)}</span>
                </div>
+               <div className="sm:hidden text-xs font-black text-indigo-700">{formatIDR(auth.balance || 0)}</div>
             </button>
 
-            <button onClick={() => setView('orders')} className="p-2 text-gray-500 hover:text-blue-600 transition-colors">
-              <Receipt className="w-6 h-6" />
-            </button>
-            <button onClick={() => setView('customer-service')} className="relative p-2 text-gray-500 hover:text-blue-600 transition-colors">
-              <MessageCircle className="w-6 h-6" />
-              {unreadMessages > 0 && (
-                <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white animate-pulse"></span>
-              )}
-            </button>
-            <button onClick={() => setView('profile')} className="p-2 text-gray-500 hover:text-blue-600 transition-colors">
-              <User className="w-6 h-6" />
-            </button>
-            {auth.role === 'admin' && (
-              <button 
-                onClick={() => setView('admin')} 
-                className="p-2 text-indigo-600 hover:text-indigo-800 transition-colors bg-indigo-50 rounded-xl"
-                title="Dashboard Admin"
-              >
-                <LayoutDashboard className="w-6 h-6" />
-              </button>
-            )}
             <button onClick={() => setView('cart')} className="relative p-2 text-gray-700 hover:text-blue-600 transition-colors">
               <ShoppingCart className="w-6 h-6" />
               {cartCount > 0 && (
@@ -464,10 +462,108 @@ const App: React.FC = () => {
                 </span>
               )}
             </button>
-            <button onClick={handleLogout} className="p-2 text-gray-400 hover:text-red-500 transition-colors"><LogOut className="w-5 h-5" /></button>
           </div>
         </div>
       </nav>
+
+      {/* Sidebar Navigation */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsSidebarOpen(false)}
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100]"
+            />
+            <motion.div 
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="fixed top-0 left-0 h-full w-72 bg-white z-[101] shadow-2xl flex flex-col"
+            >
+              <div className="p-8 border-b flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg">
+                    <ShoppingBag className="w-6 h-6" />
+                  </div>
+                  <span className="text-xl font-black text-gray-900 tracking-tighter">MWSTORE</span>
+                </div>
+                <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                <button 
+                  onClick={() => { setView('home'); setIsSidebarOpen(false); }}
+                  className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'home' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'text-gray-400 hover:bg-gray-50'}`}
+                >
+                  <LayoutGrid className="w-5 h-5" />
+                  <span>Beranda</span>
+                </button>
+
+                <button 
+                  onClick={() => { setView('profile'); setIsSidebarOpen(false); }}
+                  className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'profile' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'text-gray-400 hover:bg-gray-50'}`}
+                >
+                  <User className="w-5 h-5" />
+                  <span>Profil Saya</span>
+                </button>
+
+                <button 
+                  onClick={() => { setView('orders'); setIsSidebarOpen(false); }}
+                  className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'orders' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'text-gray-400 hover:bg-gray-50'}`}
+                >
+                  <Receipt className="w-5 h-5" />
+                  <span>Pesanan Saya</span>
+                </button>
+
+                <button 
+                  onClick={() => { setView('customer-service'); setIsSidebarOpen(false); }}
+                  className={`w-full flex items-center justify-between px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'customer-service' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'text-gray-400 hover:bg-gray-50'}`}
+                >
+                  <div className="flex items-center gap-4">
+                    <MessageCircle className="w-5 h-5" />
+                    <span>Layanan CS</span>
+                  </div>
+                  {unreadMessages > 0 && (
+                    <span className="w-5 h-5 bg-red-500 text-white text-[8px] flex items-center justify-center rounded-full leading-none">
+                      {unreadMessages}
+                    </span>
+                  )}
+                </button>
+
+                {auth.role === 'admin' && (
+                  <button 
+                    onClick={() => { setView('admin'); setIsSidebarOpen(false); }}
+                    className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'admin' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100' : 'text-indigo-600 bg-indigo-50 hover:bg-indigo-100'}`}
+                  >
+                    <LayoutDashboard className="w-5 h-5" />
+                    <span>Panel Admin</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="p-6 border-t font-black text-[9px] text-gray-300 uppercase tracking-widest text-center">
+                MWSTORE {APP_VERSION}
+              </div>
+
+              <div className="p-6 pt-0">
+                <button 
+                  onClick={handleLogout}
+                  className="w-full flex items-center gap-4 px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] text-red-500 hover:bg-red-50 transition-all"
+                >
+                  <LogOut className="w-5 h-5" />
+                  <span>Keluar</span>
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       <main className="flex-1 max-w-7xl mx-auto px-4 py-8 w-full overflow-hidden">
         <AnimatePresence mode="wait">
