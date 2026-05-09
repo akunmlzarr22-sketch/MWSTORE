@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { ShoppingBag, Search, ChevronRight, LayoutGrid, LayoutDashboard, Trash2, Plus, Minus, CreditCard, AlertCircle, ShoppingCart, Settings, LogOut, Wallet, QrCode, Building2, CheckCircle2, Copy, MessageCircle, Mail, RefreshCw, Download, Info, Share2, ExternalLink, X, Smartphone, Globe, Gamepad2, Receipt, ShieldCheck, Banknote, Sparkles, Check, Scan, Save, MonitorSmartphone, Clock, Coins, ArrowUpCircle, User } from 'lucide-react';
+import { ShoppingBag, Search, ChevronRight, LayoutGrid, LayoutDashboard, Trash2, Plus, Minus, CreditCard, AlertCircle, ShoppingCart, Settings, LogOut, Wallet, QrCode, Building2, CheckCircle2, Copy, MessageCircle, Mail, RefreshCw, Download, Info, Share2, ExternalLink, X, Smartphone, Globe, Gamepad2, Receipt, ShieldCheck, Banknote, Sparkles, Check, Scan, Save, MonitorSmartphone, Clock, Coins, ArrowUpCircle, User, Menu } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, CartItem, Order, View, AuthState, UserRole, UserAccount } from '@/types';
 import { MOCK_PRODUCTS, formatIDR } from '@/constants';
@@ -27,6 +27,7 @@ const App: React.FC = () => {
     balance: null
   });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   // Authenticated listener - Updated for Local Storage
   useEffect(() => {
@@ -337,6 +338,17 @@ const App: React.FC = () => {
       }
     }, 1500);
   };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Loading System...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!auth.isLoggedIn) {
     return (
