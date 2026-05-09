@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageCircle, Send, User, ShieldCheck, Clock, X } from 'lucide-react';
 import { Message } from '@/types';
-import { ApiService } from '@/services/apiService';
+import { ApiService, safeParseDate } from '@/services/apiService';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface CustomerServiceProps {
@@ -19,25 +19,26 @@ const CustomerService: React.FC<CustomerServiceProps> = ({ username, onBack }) =
   };
 
   useEffect(() => {
-    const loadMessages = () => {
-      const allMessages = ApiService.getMessages();
-      const userMessages = allMessages.filter(
-        m => m.sender === username || m.recipient === username
-      ).reverse(); // Oldest first for chat view
-      setMessages(userMessages);
+    const unsub = ApiService.listenToMessages(username, false, (fetchedMessages) => {
+      // Sort oldest first for chat view
+      const sorted = [...fetchedMessages].sort((a, b) => {
+        const timeA = safeParseDate(a.timestamp).getTime();
+        const timeB = safeParseDate(b.timestamp).getTime();
+        return timeA - timeB;
+      });
+      setMessages(sorted);
       
       // Mark admin messages to user as read
-      const unreadAdminMessages = userMessages
+      const unreadAdminMessages = sorted
         .filter(m => m.sender === 'admin' && !m.read)
-        .map(m => m.id);
+        .map(m => m.id as string);
+      
       if (unreadAdminMessages.length > 0) {
         ApiService.markAsRead(unreadAdminMessages);
       }
-    };
+    });
 
-    loadMessages();
-    const interval = setInterval(loadMessages, 3000);
-    return () => clearInterval(interval);
+    return () => unsub();
   }, [username]);
 
   useEffect(scrollToBottom, [messages]);
@@ -46,15 +47,18 @@ const CustomerService: React.FC<CustomerServiceProps> = ({ username, onBack }) =
     e.preventDefault();
     if (!newMessage.trim()) return;
 
-    ApiService.sendMessage(username, 'admin', newMessage);
+    const message: Message = {
+      id: Math.random().toString(36).substr(2, 9),
+      sender: username,
+      senderUid: username,
+      recipient: 'admin',
+      content: newMessage,
+      timestamp: new Date().toISOString(),
+      read: false
+    };
+
+    ApiService.sendMessage(message, username);
     setNewMessage('');
-    
-    // Immediate local update for better UX
-    const allMessages = ApiService.getMessages();
-    const userMessages = allMessages.filter(
-      m => m.sender === username || m.recipient === username
-    ).reverse();
-    setMessages(userMessages);
   };
 
   return (
@@ -128,7 +132,12 @@ const CustomerService: React.FC<CustomerServiceProps> = ({ username, onBack }) =
                         <p className="text-sm font-medium leading-relaxed">{m.content}</p>
                         <div className={`text-[8px] font-black mt-2 text-right opacity-50 flex items-center justify-end gap-1 ${m.sender === username ? 'text-white' : 'text-gray-400'}`}>
                            <Clock className="w-2 h-2" />
-                           {m.timestamp}
+                           {(() => {
+                              const date = safeParseDate(m.timestamp);
+                              return isNaN(date.getTime()) || date.getTime() === 0 
+                                ? m.timestamp 
+                                : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                           })()}
                         </div>
                      </div>
                   </motion.div>

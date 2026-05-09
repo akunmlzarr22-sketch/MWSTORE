@@ -5,7 +5,7 @@ import { Package, Search, TrendingUp, DollarSign, ArrowLeft, Plus, X, Image as I
 import { formatIDR } from '@/constants';
 import { Order, Product, UserAccount, TopUpTransaction, Message } from '@/types';
 import { APP_CONFIG } from '@/config';
-import { ApiService } from '@/services/apiService';
+import { ApiService, safeParseDate } from '@/services/apiService';
 
 const chartData = [
   { name: 'Sen', sales: 4000000 },
@@ -46,6 +46,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
   const [selectedUserChat, setSelectedUserChat] = useState<string | null>(null);
   const [adminMessages, setAdminMessages] = useState<Message[]>([]);
+  const [userTopUps, setUserTopUps] = useState<TopUpTransaction[]>([]);
   const [newAdminMessage, setNewAdminMessage] = useState('');
   const adminChatEndRef = React.useRef<HTMLDivElement>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -55,14 +56,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   useEffect(() => {
-    const fetchAdminData = async () => {
-      const data = await ApiService.getUsers();
-      onUpdateUsers(data);
-    };
-    fetchAdminData();
-  }, [onUpdateUsers]);
-
-  useEffect(() => {
     const unsubMaintenance = ApiService.listenToSettings((settings) => {
       if (settings && settings.maintenanceMode !== undefined) {
         setIsMaintenance(settings.maintenanceMode);
@@ -70,18 +63,59 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
 
     const unsubMessages = ApiService.listenToMessages('', true, (msgs) => {
-       setAdminMessages(msgs);
+      // Sort newest first
+      const sorted = [...msgs].sort((a, b) => {
+        const timeA = safeParseDate(a.timestamp).getTime();
+        const timeB = safeParseDate(b.timestamp).getTime();
+        return timeB - timeA;
+      });
+      setAdminMessages(sorted);
+    });
+
+    const unsubTopUps = ApiService.listenToTopUps('', true, (data) => {
+      setUserTopUps(data);
     });
 
     return () => {
       unsubMaintenance();
       unsubMessages();
+      unsubTopUps();
     };
   }, []);
 
   useEffect(() => {
     adminChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [selectedUserChat, adminMessages]);
+
+  useEffect(() => {
+    if (selectedUserChat && activeTab === 'messages' && adminMessages.length > 0) {
+      const messagesToMark = adminMessages
+        .filter(m => (m.sender === selectedUserChat) && !m.read && m.sender !== 'admin')
+        .map(m => m.id as string);
+      
+      if (messagesToMark.length > 0) {
+        // Optimistic update to reflect immediately in UI
+        setAdminMessages(prev => prev.map(m => 
+          messagesToMark.includes(m.id) ? { ...m, read: true } : m
+        ));
+        ApiService.markAsRead(messagesToMark);
+      }
+    }
+  }, [selectedUserChat, adminMessages, activeTab]);
+
+  const handleMarkAllMessagesRead = async () => {
+    const unreadIds = adminMessages
+      .filter(m => m.sender !== 'admin' && !m.read)
+      .map(m => m.id as string);
+    
+    if (unreadIds.length > 0) {
+      // Optimistic update
+      setAdminMessages(prev => prev.map(m => 
+        unreadIds.includes(m.id) ? { ...m, read: true } : m
+      ));
+      await ApiService.markAsRead(unreadIds);
+    }
+  };
 
   const handleSendAdminReply = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -97,8 +131,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
        sender: 'admin',
        recipient: selectedUserChat,
        content: newAdminMessage,
-       timestamp: new Date().toLocaleString('id-ID'),
-       read: false
+       timestamp: new Date().toISOString(),
+       read: true
     };
 
     await ApiService.sendMessage(newMessage, 'admin'); // Admin UID could be 'admin' or something else
@@ -140,15 +174,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const [balanceAdjustments, setBalanceAdjustments] = useState<Record<string, string>>({});
   const [selectedUserHistory, setSelectedUserHistory] = useState<string | null>(null);
-  const [userTopUps, setUserTopUps] = useState<TopUpTransaction[]>([]);
-
-  useEffect(() => {
-    const fetchTopUps = async () => {
-      const data = await ApiService.getTopUps('', true);
-      setUserTopUps(data);
-    };
-    fetchTopUps();
-  }, [activeTab, orders]);
 
   const handleAdjustBalance = async (username: string, isAddition: boolean) => {
     const amountStr = balanceAdjustments[username] || '0';
@@ -178,37 +203,34 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         amount: finalAmount,
         date: new Date().toLocaleString('id-ID'),
         status: 'Selesai'
-      }, ''); 
+      }, username); 
       
       setBalanceAdjustments(prev => ({ ...prev, [username]: '' }));
-      
-      // Refresh topups
-      const data = await ApiService.getTopUps('', true);
-      setUserTopUps(data);
+      alert(`Berhasil ${isAddition ? 'menambah' : 'mengurangi'} saldo ${username}.`);
     }
   };
 
   const handleApproveTopUp = async (topup: TopUpTransaction) => {
     if (confirm(`Setujui Top Up sebesar ${formatIDR(topup.amount)} untuk ${topup.username}?`)) {
       const user = users.find(u => u.username === topup.username);
-      const currentBalance = user?.balance || 0;
+      if (!user) {
+        alert("User tidak ditemukan di database!");
+        return;
+      }
+      const currentBalance = user.balance || 0;
       const success = await ApiService.updateBalanceByUsername(topup.username, currentBalance + topup.amount);
       
       if (success) {
-        await ApiService.updateTopUpStatus(topup.id, 'Selesai');
-        const updatedTopUps = await ApiService.getTopUps('', true);
-        setUserTopUps(updatedTopUps);
+        await ApiService.updateTopUpStatus(topup.id!, 'Selesai');
         alert('Top Up Berhasil Disetujui!');
       }
     }
   };
 
-  const handleRejectTopUp = async (id: string) => {
-    if (confirm('Hapus/Tolak permintaan top up ini?')) {
-      // For now I'll just update status to 'Pending' (or maybe add 'Gagal' later)
-      // Or if deleting is preferred, we need a delete method.
-      // I'll keep it simple for now and just refresh.
-      alert('Fitur penghapusan transaksi akan segera hadir.');
+  const handleClearAllProducts = async () => {
+    if (confirm("Apakah Anda yakin ingin mengosongkan semua produk? Tindakan ini tidak dapat dibatalkan.")) {
+      await ApiService.clearProducts();
+      alert("Katalog telah dikosongkan.");
     }
   };
 
@@ -351,7 +373,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </button>
 
           <button 
-            onClick={() => { setActiveTab('messages'); setIsSidebarOpen(false); }}
+            onClick={() => { 
+              setActiveTab('messages'); 
+              setIsSidebarOpen(false); 
+            }}
             className={`w-full flex items-center justify-between px-6 py-4 text-[10px] font-black uppercase tracking-widest rounded-[1.5rem] transition-all group ${activeTab === 'messages' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-gray-400 hover:bg-gray-50 hover:text-indigo-600'}`}
           >
             <div className="flex items-center gap-4">
@@ -361,7 +386,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                <span>Pesan Masuk</span>
             </div>
             {adminMessages.filter(m => m.sender !== 'admin' && !m.read).length > 0 && (
-              <span className="flex items-center justify-center w-6 h-6 bg-red-500 text-white text-[9px] font-black rounded-xl">
+              <span className="flex items-center justify-center w-6 h-6 bg-red-600 text-white text-[9px] font-black rounded-full border-2 border-white shadow-sm animate-in zoom-in duration-300">
                 {adminMessages.filter(m => m.sender !== 'admin' && !m.read).length}
               </span>
             )}
@@ -378,7 +403,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                <span>Top Up Request</span>
             </div>
             {userTopUps.filter(t => t.status === 'Pending').length > 0 && (
-              <span className="flex items-center justify-center w-6 h-6 bg-orange-500 text-white text-[9px] font-black rounded-xl">
+              <span className="flex items-center justify-center min-w-[24px] h-6 bg-orange-600 border-2 border-white text-white text-[10px] font-black rounded-full shadow-lg">
                 {userTopUps.filter(t => t.status === 'Pending').length}
               </span>
             )}
@@ -406,12 +431,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           <button 
             onClick={() => { setActiveTab('orders'); setIsSidebarOpen(false); }}
-            className={`w-full flex items-center gap-4 px-6 py-4 text-[10px] font-black uppercase tracking-widest rounded-[1.5rem] transition-all group ${activeTab === 'orders' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-gray-400 hover:bg-gray-50 hover:text-indigo-600'}`}
+            className={`w-full flex items-center justify-between px-6 py-4 text-[10px] font-black uppercase tracking-widest rounded-[1.5rem] transition-all group ${activeTab === 'orders' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-gray-400 hover:bg-gray-50 hover:text-indigo-600'}`}
           >
-            <div className={`p-2 rounded-xl transition-colors ${activeTab === 'orders' ? 'bg-white/20' : 'bg-gray-50 group-hover:bg-indigo-50'}`}>
-               <LayoutGrid className="w-4 h-4" />
+            <div className="flex items-center gap-4">
+               <div className={`p-2 rounded-xl transition-colors ${activeTab === 'orders' ? 'bg-white/20' : 'bg-gray-50 group-hover:bg-indigo-50'}`}>
+                  <LayoutGrid className="w-4 h-4" />
+               </div>
+               <span>Semua Pesanan</span>
             </div>
-            <span>Semua Pesanan</span>
+            {orders.filter(o => o.status === 'Pending').length > 0 && (
+              <span className="flex items-center justify-center min-w-[24px] h-6 bg-blue-500 border-2 border-white text-white text-[10px] font-black rounded-full shadow-lg">
+                {orders.filter(o => o.status === 'Pending').length}
+              </span>
+            )}
           </button>
 
           <div className="h-4"></div>
@@ -441,12 +473,19 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       <div className="flex-1 min-w-0 flex flex-col h-screen overflow-y-auto">
         <header className="bg-white/80 backdrop-blur-md border-b sticky top-0 z-10 px-6 lg:px-8 h-20 flex items-center justify-between shrink-0">
            <div className="flex items-center gap-4">
-              <button 
-                onClick={() => setIsSidebarOpen(true)}
-                className="lg:hidden p-3 bg-gray-50 hover:bg-gray-100 rounded-2xl transition-colors text-gray-600"
-              >
-                 <Menu className="w-6 h-6" />
-              </button>
+              <div className="relative">
+                 <button 
+                   onClick={() => setIsSidebarOpen(true)}
+                   className="lg:hidden p-3 bg-gray-50 hover:bg-gray-100 rounded-2xl transition-colors text-gray-600"
+                 >
+                    <Menu className="w-6 h-6" />
+                 </button>
+                 {(adminMessages.filter(m => m.sender !== 'admin' && !m.read).length + 
+                   userTopUps.filter(t => t.status === 'Pending').length +
+                   orders.filter(o => o.status === 'Pending').length) > 0 && (
+                   <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-600 border-2 border-white rounded-full lg:hidden block animate-pulse"></span>
+                 )}
+              </div>
               <div>
                  <h2 className="text-sm font-black text-gray-900 uppercase tracking-widest">
                     {activeTab === 'stats' && 'Statistik & Ringkasan'}
@@ -474,11 +513,31 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in slide-in-from-bottom-5 duration-500 min-h-[600px] h-[calc(100vh-280px)]">
             {/* List Chat */}
             <div className="lg:col-span-1 bg-white rounded-[2.5rem] border border-gray-100 shadow-sm flex flex-col overflow-hidden">
-               <div className="p-6 border-b border-gray-50">
+               <div className="p-6 border-b border-gray-50 flex flex-col gap-2">
+                  <div className="flex justify-between items-center text-indigo-600">
+                    <h3 className="font-black uppercase tracking-[0.2em] text-[10px]">Layanan Pelanggan</h3>
+                    <button 
+                      onClick={handleMarkAllMessagesRead}
+                      className="p-1.5 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
+                      title="Tandai Semua Dibaca"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                    </button>
+                  </div>
                   <h3 className="font-black text-gray-900 uppercase tracking-widest text-xs">Daftar Percakapan</h3>
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">Total {adminMessages.filter(m => m.sender !== 'admin' && !m.read).length} Pesan Belum Dibaca</p>
                </div>
-               <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                  {users.filter(u => u.username !== 'admin').map(user => {
+                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                  {users
+                    .filter(u => u.username !== 'admin')
+                    .sort((a, b) => {
+                      const lastA = getUserLastMessage(a.username);
+                      const lastB = getUserLastMessage(b.username);
+                      if (!lastA) return 1;
+                      if (!lastB) return -1;
+                      return safeParseDate(lastB.timestamp).getTime() - safeParseDate(lastA.timestamp).getTime();
+                    })
+                    .map(user => {
                      const lastMsg = getUserLastMessage(user.username);
                      const unread = getUnreadCount(user.username);
                      return (
@@ -489,7 +548,14 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             const unreadIds = adminMessages
                               .filter(m => m.sender === user.username && !m.read)
                               .map(m => m.id);
-                            if (unreadIds.length > 0) ApiService.markAsRead(unreadIds);
+                            
+                            if (unreadIds.length > 0) {
+                              // Optimistic update
+                              setAdminMessages(prev => prev.map(msg => 
+                                unreadIds.includes(msg.id) ? { ...msg, read: true } : msg
+                              ));
+                              ApiService.markAsRead(unreadIds as string[]);
+                            }
                           }}
                           className={`w-full p-4 rounded-2xl flex items-center gap-4 transition-all border-2 ${
                             selectedUserChat === user.username 
@@ -541,7 +607,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                      <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50/50">
                         {adminMessages
                           .filter(m => m.sender === selectedUserChat || m.recipient === selectedUserChat)
-                          .reverse()
+                          .sort((a, b) => {
+                            const timeA = safeParseDate(a.timestamp).getTime();
+                            const timeB = safeParseDate(b.timestamp).getTime();
+                            return timeA - timeB;
+                          })
                           .map(m => (
                             <div key={m.id} className={`flex ${m.sender === 'admin' ? 'justify-end' : 'justify-start'}`}>
                                <div className={`max-w-[70%] p-4 rounded-xl shadow-sm ${
@@ -551,7 +621,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                }`}>
                                   <p className="text-sm font-medium">{m.content}</p>
                                   <p className={`text-[8px] mt-2 opacity-50 font-black flex items-center gap-1 ${m.sender === 'admin' ? 'justify-end' : ''}`}>
-                                     <Clock className="w-2 h-2" /> {m.timestamp}
+                                     <Clock className="w-2 h-2" /> {(() => {
+                                        const date = safeParseDate(m.timestamp);
+                                        return isNaN(date.getTime()) || date.getTime() === 0 
+                                          ? m.timestamp 
+                                          : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                     })()}
                                   </p>
                                </div>
                             </div>
@@ -583,7 +658,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <MessageCircle className="w-12 h-12" />
                      </div>
                      <h3 className="text-xl font-black text-gray-900 uppercase tracking-widest mb-2">Pilih Chat</h3>
-                     <p className="text-gray-400 font-medium max-w-xs uppercase text-[10px] tracking-widest leading-loose">Pilih salah satu pelanggan di samping untuk memulai percakapan atau membalas pesan.</p>
+                     <p className="text-gray-400 font-medium max-w-xs uppercase text-[10px] tracking-widest leading-loose mb-6">Pilih salah satu pelanggan di samping untuk memulai percakapan atau membalas pesan.</p>
+                     
+                     {adminMessages.filter(m => m.sender !== 'admin' && !m.read).length > 0 && (
+                        <button 
+                          onClick={handleMarkAllMessagesRead}
+                          className="flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95"
+                        >
+                           <CheckCircle className="w-5 h-5" />
+                           Tandai Semua Sebagai Dibaca
+                        </button>
+                     )}
                   </div>
                )}
             </div>
@@ -1068,28 +1153,41 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         {/* Tab produk dan statistik tetap sama dengan sebelumnya */}
         {activeTab === 'products' && (
           <div className="animate-in fade-in duration-500">
-            <div className="flex justify-between items-center mb-8">
-               <h2 className="text-3xl font-black text-gray-900">Katalog Produk</h2>
-                <button 
-                  onClick={() => {
-                    setEditingProduct(null);
-                    setNewProduct({ 
-                      name: '', 
-                      description: '', 
-                      price: '', 
-                      category: 'Top Up Game', 
-                      image: '', 
-                      stock: '',
-                      discount: '0',
-                      productType: 'Duplikat',
-                      inventory: ['']
-                    });
-                    setShowAddModal(true);
-                  }}
-                  className="flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all active:scale-95"
-                >
-                  <Plus className="w-4 h-4" /> Tambah Produk
-                </button>
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10">
+               <h2 className="text-3xl font-black text-gray-900 flex items-center gap-4">
+                  <div className="p-3 bg-blue-600 rounded-2xl text-white shadow-xl shadow-blue-100">
+                     <ShoppingBasket className="w-7 h-7" />
+                  </div>
+                  Kelola Katalog Produk
+               </h2>
+               <div className="flex items-center gap-3 w-full md:w-auto">
+                 <button 
+                   onClick={handleClearAllProducts}
+                   className="flex-1 md:flex-none p-4 bg-red-50 text-red-500 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-red-100 transition-all flex items-center justify-center gap-2"
+                 >
+                   <Trash2 className="w-4 h-4" /> Kosongkan
+                 </button>
+                 <button 
+                   onClick={() => {
+                     setEditingProduct(null);
+                     setNewProduct({ 
+                       name: '', 
+                       description: '', 
+                       price: '', 
+                       category: 'Top Up Game', 
+                       image: '', 
+                       stock: '',
+                       discount: '0',
+                       productType: 'Duplikat',
+                       inventory: ['']
+                     });
+                     setShowAddModal(true);
+                   }}
+                   className="flex-1 md:flex-none p-4 bg-blue-600 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl shadow-blue-100 hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
+                 >
+                   <Plus className="w-4 h-4" /> Tambah Produk
+                 </button>
+               </div>
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">

@@ -29,7 +29,7 @@ const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Authenticated listener - Updated for Local Storage
+  // Authenticated listener - Updated for Local Storage (keeping for session persistent login)
   useEffect(() => {
     const savedAuth = localStorage.getItem('mwstore_auth');
     if (savedAuth) {
@@ -38,17 +38,17 @@ const App: React.FC = () => {
     setIsLoading(false);
   }, []);
 
-  // Fetch initial data
+  // Use Reactive Listeners for Products, Users, and Orders
   useEffect(() => {
-    const fetchData = async () => {
-      let fetchedProducts = await ApiService.getProducts();
+    const unsubProducts = ApiService.listenToProducts((fetchedProducts) => {
       if (fetchedProducts.length === 0) {
-        ApiService.saveProducts(MOCK_PRODUCTS);
-        fetchedProducts = MOCK_PRODUCTS;
+        setProducts([]);
+      } else {
+        setProducts(fetchedProducts);
       }
-      setProducts(fetchedProducts);
-      
-      let fetchedUsers = await ApiService.getUsers();
+    });
+
+    const unsubUsers = ApiService.listenToUsers((fetchedUsers) => {
       if (fetchedUsers.length === 0) {
         const initialAdmin: UserAccount = {
           username: 'admin',
@@ -57,17 +57,24 @@ const App: React.FC = () => {
           balance: 999999999,
           email: 'admin@mwstore.com'
         };
-        ApiService.saveUsers([initialAdmin]);
-        fetchedUsers = [initialAdmin];
+        ApiService.saveUser(initialAdmin, 'admin');
+      } else {
+        setUsers(fetchedUsers);
       }
-      setUsers(fetchedUsers);
+    });
 
-      if (auth.isLoggedIn && auth.username) {
-        const fetchedOrders = await ApiService.getOrders(auth.username, auth.role === 'admin');
+    let unsubOrders = () => {};
+    if (auth.isLoggedIn && auth.username) {
+      unsubOrders = ApiService.listenToOrders(auth.username, auth.role === 'admin', (fetchedOrders) => {
         setOrders(fetchedOrders);
-      }
+      });
+    }
+
+    return () => {
+      unsubProducts();
+      unsubUsers();
+      unsubOrders();
     };
-    fetchData();
   }, [auth.isLoggedIn, auth.role, auth.username]);
 
   // Listen for maintenance mode
@@ -85,39 +92,32 @@ const App: React.FC = () => {
   const handleAddOrUpdateProduct = async (product: Product) => {
     const productToSave = { ...product, rating: product.rating || 5.0 };
     await ApiService.saveProduct(productToSave);
-    const updatedProducts = await ApiService.getProducts();
-    setProducts(updatedProducts);
+    // No need to manually setProducts, listener handles it
   };
 
   const handleUpdateUsers = React.useCallback((newUsers: UserAccount[]) => {
-    setUsers(newUsers);
+    // Listener handles it
   }, []);
 
   const handleDeleteUser = async (username: string) => {
-    const newUsers = users.filter(u => u.username !== username);
-    ApiService.saveUsers(newUsers);
-    setUsers(newUsers);
+    if (username === 'admin') {
+      alert("Admin tidak dapat dihapus!");
+      return;
+    }
+    await ApiService.deleteUser(username);
     alert(`Akun ${username} berhasil dihapus.`);
   };
 
   const handleResetUserHistory = async (username: string) => {
-    // To reset history, we would need to filter orders and topups globally
-    // Actually, we can just filter them in the state if they were local, 
-    // but orders and topups are still on Firebase.
-    // However, for the user list records, we can clear properties if needed.
     alert(`Fitur reset riwayat untuk ${username} sedang diproses.`);
   };
 
   const handleUpdateOrder = async (orderId: string, status: any) => {
     await ApiService.updateOrderStatus(orderId, status);
-    const fetchedOrders = await ApiService.getOrders(auth.username || '', auth.role === 'admin');
-    setOrders(fetchedOrders);
   };
 
   const handleDeleteProduct = async (id: string) => {
     await ApiService.deleteProduct(id);
-    const updated = await ApiService.getProducts();
-    setProducts(updated);
   };
 
   const [view, setView] = useState<View>('home');
@@ -188,9 +188,7 @@ const App: React.FC = () => {
     const exists = users.find(u => u.username.toLowerCase() === account.username.toLowerCase());
     if (exists) return false;
     
-    const newUsers = [...users, account];
-    ApiService.saveUsers(newUsers);
-    setUsers(newUsers);
+    ApiService.saveUser(account, account.username);
     return true;
   };
 

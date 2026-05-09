@@ -1,220 +1,238 @@
-
 import { Order, UserAccount, TopUpTransaction, Message, Product } from '@/types';
+import { 
+  collection, 
+  doc, 
+  getDoc, 
+  getDocs, 
+  setDoc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  where, 
+  orderBy, 
+  onSnapshot, 
+  addDoc,
+  serverTimestamp,
+  FieldValue
+} from 'firebase/firestore';
+import { db } from '@/lib/firebase';
+
+// Helper for parsing mixed timestamps (ISO or old format)
+export const safeParseDate = (timestamp: string): Date => {
+  const d = new Date(timestamp);
+  if (!isNaN(d.getTime())) return d;
+  
+  // If it's an old string like "HH:mm:ss", pad it with today's date
+  if (typeof timestamp === 'string' && timestamp.includes(':') && timestamp.split(':').length >= 2) {
+    const [hours, minutes, seconds] = timestamp.split(':');
+    const now = new Date();
+    now.setHours(parseInt(hours) || 0);
+    now.setMinutes(parseInt(minutes) || 0);
+    now.setSeconds(parseInt(seconds || '0') || 0);
+    return now;
+  }
+  
+  return new Date(0); // Fallback to epoch
+};
 
 export const ApiService = {
-  _getLocalOrders: (): Order[] => {
-    const data = localStorage.getItem('mwstore_orders');
-    return data ? JSON.parse(data) : [];
-  },
-
-  _saveLocalOrders: (orders: Order[]) => {
-    localStorage.setItem('mwstore_orders', JSON.stringify(orders));
-  },
-
-  _getLocalTopUps: (): TopUpTransaction[] => {
-    const data = localStorage.getItem('mwstore_topups');
-    return data ? JSON.parse(data) : [];
-  },
-
-  _saveLocalTopUps: (topups: TopUpTransaction[]) => {
-    localStorage.setItem('mwstore_topups', JSON.stringify(topups));
-  },
-
-  _getLocalProducts: (): Product[] => {
-    const data = localStorage.getItem('mwstore_products');
-    return data ? JSON.parse(data) : [];
-  },
-
-  _saveLocalProducts: (products: Product[]) => {
-    localStorage.setItem('mwstore_products', JSON.stringify(products));
-  },
-
-  _getLocalMessages: (): Message[] => {
-    const data = localStorage.getItem('mwstore_messages');
-    return data ? JSON.parse(data) : [];
-  },
-
-  _saveLocalMessages: (messages: Message[]) => {
-    localStorage.setItem('mwstore_messages', JSON.stringify(messages));
-  },
-
-  _getLocalSettings: () => {
-    const data = localStorage.getItem('mwstore_settings');
-    return data ? JSON.parse(data) : { maintenanceMode: false };
-  },
-
-  _saveLocalSettings: (settings: any) => {
-    localStorage.setItem('mwstore_settings', JSON.stringify(settings));
-  },
-
-  _getLocalUsers: (): UserAccount[] => {
-    const data = localStorage.getItem('mwstore_users');
-    return data ? JSON.parse(data) : [];
-  },
-
-  _saveLocalUsers: (users: UserAccount[]) => {
-    localStorage.setItem('mwstore_users', JSON.stringify(users));
-  },
-
-  // Get user profile
+  // Users
   getUser: async (username: string): Promise<UserAccount | null> => {
-    const users = ApiService._getLocalUsers();
-    return users.find(u => u.username === username) || null;
+    const docRef = doc(db, 'users', username);
+    const docSnap = await getDoc(docRef);
+    return docSnap.exists() ? docSnap.data() as UserAccount : null;
   },
 
-  // Save/Update user profile
   saveUser: async (user: UserAccount, username: string) => {
-    const users = ApiService._getLocalUsers();
-    const index = users.findIndex(u => u.username === username);
-    if (index !== -1) {
-      users[index] = { ...users[index], ...user };
-    } else {
-      users.push(user);
-    }
-    ApiService._saveLocalUsers(users);
+    await setDoc(doc(db, 'users', username), user, { merge: true });
   },
 
-  // Get all users (Admin only)
   getUsers: async (): Promise<UserAccount[]> => {
-    return ApiService._getLocalUsers();
+    const querySnapshot = await getDocs(collection(db, 'users'));
+    return querySnapshot.docs.map(doc => doc.data() as UserAccount);
   },
 
-  // Helper to save whole list
-  saveUsers: (users: UserAccount[]) => {
-    ApiService._saveLocalUsers(users);
+  saveUsers: async (users: UserAccount[]) => {
+    for (const user of users) {
+      await setDoc(doc(db, 'users', user.username), user, { merge: true });
+    }
+  },
+
+  listenToUsers: (callback: (users: UserAccount[]) => void) => {
+    return onSnapshot(collection(db, 'users'), (snapshot) => {
+      callback(snapshot.docs.map(doc => doc.data() as UserAccount));
+    });
   },
 
   // Orders
   getOrders: async (username: string, isAdmin: boolean = false): Promise<Order[]> => {
-    const allOrders = ApiService._getLocalOrders();
-    if (isAdmin) return allOrders;
-    return allOrders.filter(o => o.username === username);
+    let q;
+    if (isAdmin) {
+      q = query(collection(db, 'orders'), orderBy('date', 'desc'));
+    } else {
+      q = query(collection(db, 'orders'), where('username', '==', username), orderBy('date', 'desc'));
+    }
+    const querySnapshot = await getDocs(q);
+    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order));
   },
 
   createOrder: async (order: Order, username: string) => {
-    const orders = ApiService._getLocalOrders();
-    orders.unshift({ ...order, username });
-    ApiService._saveLocalOrders(orders);
+    await addDoc(collection(db, 'orders'), { ...order, username, createdAt: serverTimestamp() });
   },
 
   updateOrderStatus: async (orderId: string, status: string) => {
-    const orders = ApiService._getLocalOrders();
-    const index = orders.findIndex(o => o.id === orderId);
-    if (index !== -1) {
-      orders[index].status = status as any;
-      ApiService._saveLocalOrders(orders);
+    const q = query(collection(db, 'orders'), where('id', '==', orderId));
+    const querySnapshot = await getDocs(q);
+    if (!querySnapshot.empty) {
+      await updateDoc(doc(db, 'orders', querySnapshot.docs[0].id), { status });
     }
+  },
+
+  listenToOrders: (username: string, isAdmin: boolean, callback: (orders: Order[]) => void) => {
+    let q;
+    if (isAdmin) {
+      q = query(collection(db, 'orders'), orderBy('date', 'desc'));
+    } else {
+      q = query(collection(db, 'orders'), where('username', '==', username), orderBy('date', 'desc'));
+    }
+    return onSnapshot(q, (snapshot) => {
+      callback(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order)));
+    });
   },
 
   // Top Ups
   getTopUps: async (username: string, isAdmin: boolean = false): Promise<TopUpTransaction[]> => {
-    const allTopUps = ApiService._getLocalTopUps();
-    if (isAdmin) return allTopUps;
-    return allTopUps.filter(t => t.username === username);
+    let q;
+    if (isAdmin) {
+      q = query(collection(db, 'topups'), orderBy('date', 'desc'));
+    } else {
+      q = query(collection(db, 'topups'), where('username', '==', username), orderBy('date', 'desc'));
+    }
+    const querySnapshot = await getDocs(q);
+    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TopUpTransaction));
   },
 
   createTopUp: async (topup: TopUpTransaction, username: string) => {
-    const topups = ApiService._getLocalTopUps();
-    topups.unshift({ ...topup, username });
-    ApiService._saveLocalTopUps(topups);
+    await addDoc(collection(db, 'topups'), { ...topup, username, createdAt: serverTimestamp() });
   },
 
   updateTopUpStatus: async (topupId: string, status: string) => {
-    const topups = ApiService._getLocalTopUps();
-    const index = topups.findIndex(t => t.id === topupId);
-    if (index !== -1) {
-      topups[index].status = status as any;
-      ApiService._saveLocalTopUps(topups);
+    const q = query(collection(db, 'topups'), where('id', '==', topupId));
+    const querySnapshot = await getDocs(q);
+    if (!querySnapshot.empty) {
+      await updateDoc(doc(db, 'topups', querySnapshot.docs[0].id), { status });
     }
+  },
+
+  listenToTopUps: (username: string, isAdmin: boolean, callback: (topups: TopUpTransaction[]) => void) => {
+    let q;
+    if (isAdmin) {
+      q = query(collection(db, 'topups'), orderBy('date', 'desc'));
+    } else {
+      q = query(collection(db, 'topups'), where('username', '==', username), orderBy('date', 'desc'));
+    }
+    return onSnapshot(q, (snapshot) => {
+      callback(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TopUpTransaction)));
+    });
   },
 
   // Products
   getProducts: async (): Promise<Product[]> => {
-    let products = ApiService._getLocalProducts();
-    // Filter out deleted products if any (redundant if using splicing but good to have)
-    products = products.filter(p => !p.deleted);
-    return products;
+    const querySnapshot = await getDocs(collection(db, 'products'));
+    return querySnapshot.docs.map(doc => doc.data() as Product);
   },
 
-  saveProducts: (products: Product[]) => {
-    ApiService._saveLocalProducts(products);
+  saveProducts: async (products: Product[]) => {
+    for (const product of products) {
+      await setDoc(doc(db, 'products', product.id), product);
+    }
   },
 
   saveProduct: async (product: Product) => {
-    const products = ApiService._getLocalProducts();
-    const index = products.findIndex(p => p.id === product.id);
-    if (index !== -1) {
-      products[index] = product;
-    } else {
-      products.push(product);
-    }
-    ApiService._saveLocalProducts(products);
+    await setDoc(doc(db, 'products', product.id), product, { merge: true });
   },
 
   deleteProduct: async (productId: string) => {
-    const products = ApiService._getLocalProducts();
-    const index = products.findIndex(p => p.id === productId);
-    if (index !== -1) {
-      // Real delete as requested for better UX if local
-      products.splice(index, 1);
-      ApiService._saveLocalProducts(products);
-    }
+    await deleteDoc(doc(db, 'products', productId));
+  },
+
+  deleteUser: async (username: string) => {
+    await deleteDoc(doc(db, 'users', username));
+  },
+
+  listenToProducts: (callback: (products: Product[]) => void) => {
+    return onSnapshot(collection(db, 'products'), (snapshot) => {
+      callback(snapshot.docs.map(doc => doc.data() as Product));
+    });
   },
 
   // Messages
   listenToMessages: (username: string, isAdmin: boolean, callback: (messages: Message[]) => void) => {
-    const checkMessages = () => {
-      const allMessages = ApiService._getLocalMessages();
-      const filtered = isAdmin 
-        ? allMessages 
-        : allMessages.filter(m => m.senderUid === username || m.recipient === username);
-      callback(filtered);
-    };
-
-    checkMessages();
-    const interval = setInterval(checkMessages, 2000);
-    return () => clearInterval(interval);
+    let q;
+    if (isAdmin) {
+      q = query(collection(db, 'messages'), orderBy('timestamp', 'desc'));
+    } else {
+      q = query(
+        collection(db, 'messages'), 
+        where('recipient', 'in', [username, 'admin']),
+        orderBy('timestamp', 'desc')
+      );
+    }
+    
+    return onSnapshot(q, (snapshot) => {
+      let msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
+      if (!isAdmin) {
+        msgs = msgs.filter(m => m.sender === username || m.recipient === username);
+      }
+      callback(msgs);
+    });
   },
 
   sendMessage: async (message: Message, username: string) => {
-    const messages = ApiService._getLocalMessages();
-    messages.unshift({ ...message, senderUid: username });
-    ApiService._saveLocalMessages(messages);
+    await addDoc(collection(db, 'messages'), { 
+      ...message, 
+      sender: message.sender || username, // Ensure 'sender' is present for filters
+      senderUid: username, 
+      createdAt: serverTimestamp() 
+    });
   },
 
-  markAsRead: async (messageId: string) => {
-    const messages = ApiService._getLocalMessages();
-    const index = messages.findIndex(m => m.id === messageId);
-    if (index !== -1) {
-      messages[index].read = true;
-      ApiService._saveLocalMessages(messages);
-    }
+  markAsRead: async (messageIds: string[]) => {
+    // Use Promise.all for faster execution
+    await Promise.all(messageIds.map(async (messageId) => {
+      try {
+        const docRef = doc(db, 'messages', messageId);
+        await updateDoc(docRef, { read: true });
+      } catch (error) {
+        console.warn(`Could not mark message ${messageId} as read:`, error);
+      }
+    }));
+  },
+
+  clearProducts: async () => {
+    const querySnapshot = await getDocs(collection(db, 'products'));
+    await Promise.all(querySnapshot.docs.map(doc => deleteDoc(doc.ref)));
   },
 
   updateBalanceByUsername: async (username: string, newBalance: number) => {
-    const users = ApiService._getLocalUsers();
-    const index = users.findIndex(u => u.username === username);
-    if (index !== -1) {
-      users[index].balance = newBalance;
-      ApiService._saveLocalUsers(users);
+    try {
+      const docRef = doc(db, 'users', username);
+      await updateDoc(docRef, { balance: newBalance });
       return true;
+    } catch (error) {
+      console.error("Error updating balance:", error);
+      return false;
     }
-    return false;
   },
 
-  // Maintenance
+  // Settings
   listenToSettings: (callback: (settings: any) => void) => {
-    const checkSettings = () => {
-      callback(ApiService._getLocalSettings());
-    };
-    checkSettings();
-    const interval = setInterval(checkSettings, 5000);
-    return () => clearInterval(interval);
+    return onSnapshot(doc(db, 'settings', 'global'), (doc) => {
+      callback(doc.data() || { maintenanceMode: false });
+    });
   },
 
   setMaintenanceMode: async (status: boolean) => {
-    const settings = ApiService._getLocalSettings();
-    settings.maintenanceMode = status;
-    ApiService._saveLocalSettings(settings);
+    await setDoc(doc(db, 'settings', 'global'), { maintenanceMode: status }, { merge: true });
   }
 };

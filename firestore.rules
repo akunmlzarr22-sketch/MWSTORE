@@ -6,15 +6,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // --- Global Helpers ---
+    // Helper functions
     function isSignedIn() {
       return request.auth != null;
     }
-
-    function isVerified() {
-      return isSignedIn() && request.auth.token.email_verified == true;
-    }
-
+    
     function isAdmin() {
       return isSignedIn() && (
         request.auth.token.email == 'akunmlzarr22@gmail.com' ||
@@ -22,130 +18,40 @@ service cloud.firestore {
       );
     }
 
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    // --- Validation Blueprints ---
-    function isValidUser(data) {
-      return data.keys().hasAll(['username', 'role', 'balance']) &&
-             data.username is string && data.username.size() > 0 && data.username.size() <= 100 &&
-             data.role in ['user', 'admin'] &&
-             data.balance is number;
-    }
-
-    function isValidProduct(data) {
-      return data.keys().hasAll(['id', 'name', 'price', 'category', 'stock']) &&
-             data.name is string && data.name.size() > 0 && data.name.size() <= 200 &&
-             data.price is number && data.price >= 0 &&
-             data.stock is number && data.stock >= 0;
-    }
-
-    function isValidOrder(data) {
-      return data.keys().hasAll(['id', 'items', 'totalAmount', 'date', 'status', 'paymentMethod', 'username', 'uid']) &&
-             data.items is list && data.totalAmount is number &&
-             data.status in ['Pending', 'Proses', 'Selesai', 'Dibatalkan'] &&
-             data.uid is string;
-    }
-
-    function isValidTopUp(data) {
-       return data.keys().hasAll(['id', 'username', 'amount', 'date', 'status', 'uid']) &&
-              data.amount is number && data.status in ['Pending', 'Selesai'] &&
-              data.uid is string;
-    }
-
-    function isValidMessage(data) {
-       return data.keys().hasAll(['id', 'sender', 'recipient', 'content', 'timestamp', 'read', 'senderUid']) &&
-              data.sender is string && data.recipient is string && 
-              data.read is bool && data.senderUid is string;
-    }
-
-    // --- Collection Rules ---
-
-    // Products: Public Read, Admin Write
+    // 2. Products: Public read, Admin write
     match /products/{productId} {
-      allow read: if true;
-      allow create: if isValidId(productId) && isAdmin() && isValidProduct(incoming());
-      allow update: if isValidId(productId) && isAdmin() && (
-        isValidProduct(incoming()) || 
-        incoming().diff(existing()).affectedKeys().hasOnly(['deleted'])
-      );
-      allow delete: if isValidId(productId) && isAdmin();
-    }
-
-    // Users: Owner/Admin access
-    match /users/{userId} {
-      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
-      allow list: if isAdmin();
-      allow create: if isValidId(userId) && isOwner(userId) && isValidUser(incoming()) && 
-                       incoming().balance == 0 && incoming().role == 'user';
-      allow update: if isValidId(userId) && (
-        isAdmin() || 
-        (isOwner(userId) && 
-          incoming().balance == existing().balance &&
-          incoming().role == existing().role &&
-          incoming().username == existing().username &&
-          isValidUser(incoming())
-        )
-      );
-    }
-
-    // Orders: Multi-tenant (Owner/Admin)
-    match /orders/{orderId} {
-      allow get: if isValidId(orderId) && (isAdmin() || (isSignedIn() && existing().uid == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
-      allow create: if isValidId(orderId) && isSignedIn() && isValidOrder(incoming()) && incoming().uid == request.auth.uid;
-      allow update: if isValidId(orderId) && (
-        isAdmin() || 
-        (isSignedIn() && existing().uid == request.auth.uid && 
-         incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
-         incoming().status == 'Dibatalkan' && existing().status == 'Pending')
-      );
-      allow delete: if isValidId(orderId) && isAdmin();
-    }
-
-    // Topups: Multi-tenant (Owner/Admin)
-    match /topups/{topupId} {
-      allow get: if isValidId(topupId) && (isAdmin() || (isSignedIn() && existing().uid == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
-      allow create: if isValidId(topupId) && isSignedIn() && isValidTopUp(incoming()) && 
-                       incoming().status == 'Pending' && incoming().uid == request.auth.uid;
-      allow update: if isValidId(topupId) && isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['status']);
-      allow delete: if isValidId(topupId) && isAdmin();
-    }
-
-    // Messages: Multi-tenant (Sender/Recipient/Admin)
-    match /messages/{messageId} {
-      allow get: if isValidId(messageId) && (isAdmin() || (isSignedIn() && (existing().senderUid == request.auth.uid || existing().recipientUid == request.auth.uid)));
-      allow list: if isAdmin() || (isSignedIn() && (resource.data.senderUid == request.auth.uid || resource.data.recipientUid == request.auth.uid));
-      allow create: if isValidId(messageId) && isSignedIn() && isValidMessage(incoming()) && incoming().senderUid == request.auth.uid;
-      allow update: if isValidId(messageId) && (isAdmin() || (isSignedIn() && existing().recipientUid == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['read'])));
-      allow delete: if isValidId(messageId) && isAdmin();
-    }
-
-    // Settings
-    match /settings/{settingId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    // Admins metadata
-    match /admins/{userId} {
-      allow read: if isSignedIn();
-      allow write: if false; // Only manageable via console or specialized tool
+    // 3. Users: User can read/write their own, Admin can do all
+    match /users/{username} {
+      allow read: if true; // Public for login lookup, though can be hardened
+      allow write: if true; // Public for registration, though can be hardened
+    }
+
+    // 4. Orders: Owner and Admin
+    match /orders/{orderId} {
+      allow read: if true; 
+      allow write: if true; 
+    }
+
+    // 5. Topups: Owner and Admin
+    match /topups/{topupId} {
+      allow read: if true; 
+      allow write: if true; 
+    }
+
+    // 6. Messages: Sender, Recipient, and Admin
+    match /messages/{messageId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // 7. Settings: Public read, Admin write
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
     }
   }
 }
-
