@@ -84,6 +84,35 @@
       "properties": {
         "maintenanceMode": { "type": "boolean" }
       }
+    },
+    "PaymentSettings": {
+      "title": "Payment Settings",
+      "description": "Configuration for automated payment gateways",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "gateways": { "type": "array" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      }
+    },
+    "Voucher": {
+      "title": "Voucher",
+      "description": "Discount vouchers for shopping",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "amount": { "type": "number" },
+        "type": { "type": "string", "enum": ["fixed", "percentage"] },
+        "isActive": { "type": "boolean" },
+        "isUsed": { "type": "boolean" },
+        "minPurchase": { "type": "number" },
+        "expiryDate": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "recipient": { "type": "string" }
+      },
+      "required": ["code", "amount", "type", "isActive"]
     }
   },
   "firestore": {
@@ -110,6 +139,10 @@
     "settings": {
       "schema": "GlobalSettings",
       "description": "App configuration"
+    },
+    "vouchers": {
+      "schema": "Voucher",
+      "description": "Discount vouchers"
     }
   }
 }

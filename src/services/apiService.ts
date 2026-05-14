@@ -1,238 +1,506 @@
-import { Order, UserAccount, TopUpTransaction, Message, Product } from '@/types';
-import { 
-  collection, 
-  doc, 
-  getDoc, 
-  getDocs, 
-  setDoc, 
-  updateDoc, 
-  deleteDoc, 
-  query, 
-  where, 
-  orderBy, 
-  onSnapshot, 
-  addDoc,
-  serverTimestamp,
-  FieldValue
-} from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { Order, UserAccount, TopUpTransaction, Message, Product, Voucher, PaymentSettings } from '@/types';
 
-// Helper for parsing mixed timestamps (ISO or old format)
-export const safeParseDate = (timestamp: string): Date => {
-  const d = new Date(timestamp);
-  if (!isNaN(d.getTime())) return d;
-  
-  // If it's an old string like "HH:mm:ss", pad it with today's date
-  if (typeof timestamp === 'string' && timestamp.includes(':') && timestamp.split(':').length >= 2) {
-    const [hours, minutes, seconds] = timestamp.split(':');
-    const now = new Date();
-    now.setHours(parseInt(hours) || 0);
-    now.setMinutes(parseInt(minutes) || 0);
-    now.setSeconds(parseInt(seconds || '0') || 0);
-    return now;
-  }
-  
-  return new Date(0); // Fallback to epoch
+// Mock operation type for internal compatibility
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+// Local Storage Keys
+const KEYS = {
+  USERS: 'mwstore_users',
+  PRODUCTS: 'mwstore_products',
+  ORDERS: 'mwstore_orders',
+  TOPUPS: 'mwstore_topups',
+  MESSAGES: 'mwstore_messages',
+  VOUCHERS: 'mwstore_vouchers',
+  SETTINGS: 'mwstore_settings',
+  PAYMENT_SETTINGS: 'mwstore_payment_settings',
+  ADMINS: 'mwstore_admins',
+  AUTH_SESSION: 'mwstore_auth_session'
 };
 
+// Helper for parsing mixed timestamps
+export const safeParseDate = (timestamp: any): Date => {
+  if (!timestamp) return new Date(0);
+  const d = new Date(timestamp);
+  if (!isNaN(d.getTime())) return d;
+  return new Date(0);
+};
+
+// Simple event-driven listener system
+class StoreListener {
+  private listeners: Record<string, ((data: any) => void)[]> = {};
+
+  subscribe(key: string, callback: (data: any) => void) {
+    if (!this.listeners[key]) this.listeners[key] = [];
+    this.listeners[key].push(callback);
+    return () => {
+      this.listeners[key] = this.listeners[key].filter(cb => cb !== callback);
+    };
+  }
+
+  notify(key: string, data: any) {
+    if (this.listeners[key]) {
+      this.listeners[key].forEach(cb => cb(data));
+    }
+  }
+}
+
+const store = new StoreListener();
+
+// Persistence Helper
+const Storage = {
+  get: <T>(key: string, defaultValue: T): T => {
+    const data = localStorage.getItem(key);
+    try {
+        return data ? JSON.parse(data) : defaultValue;
+    } catch (e) {
+        console.error("Storage parse error for key", key, e);
+        return defaultValue;
+    }
+  },
+  set: (key: string, data: any, silent: boolean = false) => {
+    localStorage.setItem(key, JSON.stringify(data));
+    store.notify(key, data);
+    // Auto sync to server for persistence and webhook support
+    if (!silent) {
+      Storage.syncToServer();
+    }
+  },
+// Remote Sync
+  syncToServer: async (retryCount = 3) => {
+    const db = {
+      users: Storage.get(KEYS.USERS, {}),
+      products: Storage.get(KEYS.PRODUCTS, []),
+      orders: Storage.get(KEYS.ORDERS, []),
+      topups: Storage.get(KEYS.TOPUPS, []),
+      messages: Storage.get(KEYS.MESSAGES, []),
+      vouchers: Storage.get(KEYS.VOUCHERS, []),
+      paymentSettings: Storage.get(KEYS.PAYMENT_SETTINGS, null),
+      settings: Storage.get(KEYS.SETTINGS, { maintenanceMode: false })
+    };
+    try {
+      // Small delay to batch multiple rapid changes
+      if ((window as any)._syncInProgress) return;
+      (window as any)._syncInProgress = true;
+      
+      const response = await fetch('/api/db', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(db)
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Sync failed: ${response.statusText}`);
+      }
+      
+      setTimeout(() => { (window as any)._syncInProgress = false; }, 1000);
+    } catch (e) {
+      console.error("Server sync failed", e);
+      (window as any)._syncInProgress = false;
+      if (retryCount > 0) {
+        console.warn(`Retrying sync... (${retryCount} left)`);
+        setTimeout(() => Storage.syncToServer(retryCount - 1), 2000);
+      }
+    }
+  },
+  fetchFromServer: async (retryCount = 3) => {
+    try {
+      const res = await fetch('/api/db');
+      if (!res.ok) {
+        throw new Error(`Fetch failed: ${res.statusText} (${res.status})`);
+      }
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await res.text();
+        console.error("Received non-JSON response:", text.substring(0, 100));
+        throw new Error("Received non-JSON response from server");
+      }
+      const db = await res.json();
+      if (db) {
+        // Use silent set to avoid sync loop
+        if (db.users) Storage.set(KEYS.USERS, db.users, true);
+        if (db.products) Storage.set(KEYS.PRODUCTS, db.products, true);
+        if (db.orders) Storage.set(KEYS.ORDERS, db.orders, true);
+        if (db.topups) Storage.set(KEYS.TOPUPS, db.topups, true);
+        if (db.messages) Storage.set(KEYS.MESSAGES, db.messages, true);
+        if (db.vouchers) Storage.set(KEYS.VOUCHERS, db.vouchers, true);
+        if (db.paymentSettings) Storage.set(KEYS.PAYMENT_SETTINGS, db.paymentSettings, true);
+        if (db.settings) Storage.set(KEYS.SETTINGS, db.settings, true);
+      }
+    } catch (e) {
+      console.error("Server fetch failed", e);
+      if (retryCount > 0) {
+        console.warn(`Retrying fetch... (${retryCount} left)`);
+        setTimeout(() => Storage.fetchFromServer(retryCount - 1), 2000);
+      }
+    }
+  }
+};
+
+// Removed immediate initSync root call
+// We will call it explicitly from the App component or a dedicated init function
+
 export const ApiService = {
-  // Users
+  initialize: async () => {
+    try {
+        const res = await fetch('/api/health');
+        if (res.ok) {
+           await Storage.fetchFromServer();
+        }
+    } catch (e) {
+        console.error("Initialization check failed", e);
+    }
+  },
+  syncFromServer: async () => {
+    await Storage.fetchFromServer();
+  },
+  
+  // Users Support
+  waitForAuthInit: async (): Promise<any> => {
+    await Storage.fetchFromServer();
+    return Storage.get(KEYS.AUTH_SESSION, null);
+  },
+
+  ensureAuth: async (force: boolean = false) => {
+    const session = Storage.get(KEYS.AUTH_SESSION, null);
+    if (!session && force) {
+        // Mock a guest session if forced
+        const guestSession = { uid: 'guest-' + Math.random().toString(36).substr(2, 9), isAnonymous: true };
+        Storage.set(KEYS.AUTH_SESSION, guestSession);
+        return guestSession;
+    }
+    return session;
+  },
+
+  getCurrentUser: () => {
+    return Storage.get(KEYS.AUTH_SESSION, null);
+  },
+
+  logout: async () => {
+    localStorage.removeItem(KEYS.AUTH_SESSION);
+    store.notify(KEYS.AUTH_SESSION, null);
+  },
+
   getUser: async (username: string): Promise<UserAccount | null> => {
-    const docRef = doc(db, 'users', username);
-    const docSnap = await getDoc(docRef);
-    return docSnap.exists() ? docSnap.data() as UserAccount : null;
+    const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
+    return users[username] || null;
   },
 
   saveUser: async (user: UserAccount, username: string) => {
-    await setDoc(doc(db, 'users', username), user, { merge: true });
+    const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
+    users[username] = { ...user, username };
+    Storage.set(KEYS.USERS, users);
   },
 
-  getUsers: async (): Promise<UserAccount[]> => {
-    const querySnapshot = await getDocs(collection(db, 'users'));
-    return querySnapshot.docs.map(doc => doc.data() as UserAccount);
-  },
-
-  saveUsers: async (users: UserAccount[]) => {
-    for (const user of users) {
-      await setDoc(doc(db, 'users', user.username), user, { merge: true });
+  updateUserSession: async (username: string, sessionData: { uid: string, lastLogin: string }) => {
+    const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
+    if (users[username]) {
+      users[username] = { ...users[username], ...sessionData };
+      Storage.set(KEYS.USERS, users);
+    }
+    // Update active session too if it matches
+    const session = Storage.get<any>(KEYS.AUTH_SESSION, null);
+    if (session) {
+        Storage.set(KEYS.AUTH_SESSION, { ...session, ...sessionData, username });
     }
   },
 
-  listenToUsers: (callback: (users: UserAccount[]) => void) => {
-    return onSnapshot(collection(db, 'users'), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as UserAccount));
-    });
+  getUsers: async (): Promise<UserAccount[]> => {
+    const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
+    return Object.values(users);
+  },
+
+  listenToUser: (username: string, callback: (user: UserAccount | null) => void) => {
+    callback(Storage.get<Record<string, UserAccount>>(KEYS.USERS, {})[username] || null);
+    return store.subscribe(KEYS.USERS, (users) => callback(users[username] || null));
+  },
+
+  listenToUsers: (isAdmin: boolean, callback: (users: UserAccount[]) => void) => {
+    if (!isAdmin) return () => {};
+    callback(Object.values(Storage.get<Record<string, UserAccount>>(KEYS.USERS, {})));
+    return store.subscribe(KEYS.USERS, (users) => callback(Object.values(users)));
   },
 
   // Orders
   getOrders: async (username: string, isAdmin: boolean = false): Promise<Order[]> => {
-    let q;
-    if (isAdmin) {
-      q = query(collection(db, 'orders'), orderBy('date', 'desc'));
-    } else {
-      q = query(collection(db, 'orders'), where('username', '==', username), orderBy('date', 'desc'));
-    }
-    const querySnapshot = await getDocs(q);
-    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order));
+    const orders = Storage.get<Order[]>(KEYS.ORDERS, []);
+    if (isAdmin) return orders;
+    return orders.filter(o => o.username === username);
   },
 
   createOrder: async (order: Order, username: string) => {
-    await addDoc(collection(db, 'orders'), { ...order, username, createdAt: serverTimestamp() });
+    const orders = Storage.get<Order[]>(KEYS.ORDERS, []);
+    const newOrder = { ...order, username, id: order.id || Math.random().toString(36).substr(2, 9), date: order.date || new Date().toISOString() };
+    orders.unshift(newOrder);
+    Storage.set(KEYS.ORDERS, orders);
   },
 
   updateOrderStatus: async (orderId: string, status: string) => {
-    const q = query(collection(db, 'orders'), where('id', '==', orderId));
-    const querySnapshot = await getDocs(q);
-    if (!querySnapshot.empty) {
-      await updateDoc(doc(db, 'orders', querySnapshot.docs[0].id), { status });
+    const orders = Storage.get<Order[]>(KEYS.ORDERS, []);
+    const index = orders.findIndex(o => o.id === orderId);
+    if (index !== -1) {
+      orders[index].status = status;
+      Storage.set(KEYS.ORDERS, orders);
     }
   },
 
   listenToOrders: (username: string, isAdmin: boolean, callback: (orders: Order[]) => void) => {
-    let q;
-    if (isAdmin) {
-      q = query(collection(db, 'orders'), orderBy('date', 'desc'));
-    } else {
-      q = query(collection(db, 'orders'), where('username', '==', username), orderBy('date', 'desc'));
-    }
-    return onSnapshot(q, (snapshot) => {
-      callback(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Order)));
-    });
+    const fetch = () => {
+        const orders = Storage.get<Order[]>(KEYS.ORDERS, []);
+        callback(isAdmin ? orders : orders.filter(o => o.username === username));
+    };
+    fetch();
+    return store.subscribe(KEYS.ORDERS, fetch);
   },
 
   // Top Ups
   getTopUps: async (username: string, isAdmin: boolean = false): Promise<TopUpTransaction[]> => {
-    let q;
-    if (isAdmin) {
-      q = query(collection(db, 'topups'), orderBy('date', 'desc'));
-    } else {
-      q = query(collection(db, 'topups'), where('username', '==', username), orderBy('date', 'desc'));
-    }
-    const querySnapshot = await getDocs(q);
-    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TopUpTransaction));
+    const topups = Storage.get<TopUpTransaction[]>(KEYS.TOPUPS, []);
+    if (isAdmin) return topups;
+    return topups.filter(t => t.username === username);
   },
 
   createTopUp: async (topup: TopUpTransaction, username: string) => {
-    await addDoc(collection(db, 'topups'), { ...topup, username, createdAt: serverTimestamp() });
+    const topups = Storage.get<TopUpTransaction[]>(KEYS.TOPUPS, []);
+    const newTopup = { ...topup, username, id: topup.id || Math.random().toString(36).substr(2, 9), date: topup.date || new Date().toISOString() };
+    topups.unshift(newTopup);
+    Storage.set(KEYS.TOPUPS, topups);
   },
 
   updateTopUpStatus: async (topupId: string, status: string) => {
-    const q = query(collection(db, 'topups'), where('id', '==', topupId));
-    const querySnapshot = await getDocs(q);
-    if (!querySnapshot.empty) {
-      await updateDoc(doc(db, 'topups', querySnapshot.docs[0].id), { status });
+    const topups = Storage.get<TopUpTransaction[]>(KEYS.TOPUPS, []);
+    const index = topups.findIndex(t => t.id === topupId);
+    if (index !== -1) {
+      topups[index].status = status;
+      Storage.set(KEYS.TOPUPS, topups);
     }
   },
 
   listenToTopUps: (username: string, isAdmin: boolean, callback: (topups: TopUpTransaction[]) => void) => {
-    let q;
-    if (isAdmin) {
-      q = query(collection(db, 'topups'), orderBy('date', 'desc'));
-    } else {
-      q = query(collection(db, 'topups'), where('username', '==', username), orderBy('date', 'desc'));
-    }
-    return onSnapshot(q, (snapshot) => {
-      callback(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as TopUpTransaction)));
-    });
+    const fetch = () => {
+        const topups = Storage.get<TopUpTransaction[]>(KEYS.TOPUPS, []);
+        callback(isAdmin ? topups : topups.filter(t => t.username === username));
+    };
+    fetch();
+    return store.subscribe(KEYS.TOPUPS, fetch);
   },
+
+  deleteTopUp: async (topupId: string) => {
+    const topups = Storage.get<TopUpTransaction[]>(KEYS.TOPUPS, []);
+    const filtered = topups.filter(t => t.id !== topupId);
+    Storage.set(KEYS.TOPUPS, filtered);
+  },
+
+  deleteAllTopUps: async () => Storage.set(KEYS.TOPUPS, []),
+  deleteAllOrders: async () => Storage.set(KEYS.ORDERS, []),
 
   // Products
   getProducts: async (): Promise<Product[]> => {
-    const querySnapshot = await getDocs(collection(db, 'products'));
-    return querySnapshot.docs.map(doc => doc.data() as Product);
+    return Storage.get<Product[]>(KEYS.PRODUCTS, []);
   },
 
   saveProducts: async (products: Product[]) => {
-    for (const product of products) {
-      await setDoc(doc(db, 'products', product.id), product);
-    }
+    Storage.set(KEYS.PRODUCTS, products);
   },
 
   saveProduct: async (product: Product) => {
-    await setDoc(doc(db, 'products', product.id), product, { merge: true });
+    const products = Storage.get<Product[]>(KEYS.PRODUCTS, []);
+    const index = products.findIndex(p => p.id === product.id);
+    if (index !== -1) {
+      products[index] = { ...products[index], ...product };
+    } else {
+      products.push(product);
+    }
+    Storage.set(KEYS.PRODUCTS, products);
+  },
+
+  updateProductStock: async (productId: string, stock: number, inventory?: string[]) => {
+    const products = Storage.get<Product[]>(KEYS.PRODUCTS, []);
+    const index = products.findIndex(p => p.id === productId);
+    if (index !== -1) {
+      products[index].stock = stock;
+      if (inventory) products[index].inventory = inventory;
+      Storage.set(KEYS.PRODUCTS, products);
+    }
   },
 
   deleteProduct: async (productId: string) => {
-    await deleteDoc(doc(db, 'products', productId));
-  },
-
-  deleteUser: async (username: string) => {
-    await deleteDoc(doc(db, 'users', username));
+    const products = Storage.get<Product[]>(KEYS.PRODUCTS, []);
+    Storage.set(KEYS.PRODUCTS, products.filter(p => p.id !== productId));
   },
 
   listenToProducts: (callback: (products: Product[]) => void) => {
-    return onSnapshot(collection(db, 'products'), (snapshot) => {
-      callback(snapshot.docs.map(doc => doc.data() as Product));
-    });
+    callback(Storage.get<Product[]>(KEYS.PRODUCTS, []));
+    return store.subscribe(KEYS.PRODUCTS, callback);
   },
 
   // Messages
-  listenToMessages: (username: string, isAdmin: boolean, callback: (messages: Message[]) => void) => {
-    let q;
-    if (isAdmin) {
-      q = query(collection(db, 'messages'), orderBy('timestamp', 'desc'));
-    } else {
-      q = query(
-        collection(db, 'messages'), 
-        where('recipient', 'in', [username, 'admin']),
-        orderBy('timestamp', 'desc')
-      );
-    }
-    
-    return onSnapshot(q, (snapshot) => {
-      let msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
+  listenToMessages: (username: string, isAdmin: boolean, callback: (messages: Message[]) => void, type: 'all' | 'private' | 'community' = 'all') => {
+    const fetch = () => {
+      let msgs = Storage.get<Message[]>(KEYS.MESSAGES, []);
       if (!isAdmin) {
-        msgs = msgs.filter(m => m.sender === username || m.recipient === username);
+        msgs = msgs.filter(m => 
+          m.sender === username || 
+          m.recipient === username || 
+          m.recipient === 'community'
+        );
       }
-      callback(msgs);
-    });
+      
+      if (type === 'community') msgs = msgs.filter(m => m.recipient === 'community');
+      else if (type === 'private') msgs = msgs.filter(m => m.recipient !== 'community');
+      
+      callback(msgs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
+    };
+    fetch();
+    return store.subscribe(KEYS.MESSAGES, fetch);
   },
 
   sendMessage: async (message: Message, username: string) => {
-    await addDoc(collection(db, 'messages'), { 
-      ...message, 
-      sender: message.sender || username, // Ensure 'sender' is present for filters
-      senderUid: username, 
-      createdAt: serverTimestamp() 
-    });
+    const msgs = Storage.get<Message[]>(KEYS.MESSAGES, []);
+    const newMsg = { 
+        ...message, 
+        id: message.id || Math.random().toString(36).substr(2, 9),
+        sender: message.sender || username,
+        timestamp: message.timestamp || new Date().toISOString()
+    };
+    msgs.unshift(newMsg);
+    Storage.set(KEYS.MESSAGES, msgs);
   },
 
   markAsRead: async (messageIds: string[]) => {
-    // Use Promise.all for faster execution
-    await Promise.all(messageIds.map(async (messageId) => {
-      try {
-        const docRef = doc(db, 'messages', messageId);
-        await updateDoc(docRef, { read: true });
-      } catch (error) {
-        console.warn(`Could not mark message ${messageId} as read:`, error);
-      }
-    }));
+    const msgs = Storage.get<Message[]>(KEYS.MESSAGES, []);
+    msgs.forEach(m => {
+        if (messageIds.includes(m.id)) m.read = true;
+    });
+    Storage.set(KEYS.MESSAGES, msgs);
   },
 
-  clearProducts: async () => {
-    const querySnapshot = await getDocs(collection(db, 'products'));
-    await Promise.all(querySnapshot.docs.map(doc => deleteDoc(doc.ref)));
+  deleteMessage: async (messageId: string) => {
+    const msgs = Storage.get<Message[]>(KEYS.MESSAGES, []);
+    Storage.set(KEYS.MESSAGES, msgs.filter(m => m.id !== messageId));
   },
 
+  clearCommunityChat: async () => {
+    const msgs = Storage.get<Message[]>(KEYS.MESSAGES, []);
+    Storage.set(KEYS.MESSAGES, msgs.filter(m => m.recipient !== 'community'));
+  },
+
+  deleteAllMessages: async () => Storage.set(KEYS.MESSAGES, []),
+
+  // Balance
   updateBalanceByUsername: async (username: string, newBalance: number) => {
-    try {
-      const docRef = doc(db, 'users', username);
-      await updateDoc(docRef, { balance: newBalance });
+    const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
+    if (users[username]) {
+      users[username].balance = newBalance;
+      Storage.set(KEYS.USERS, users);
       return true;
-    } catch (error) {
-      console.error("Error updating balance:", error);
-      return false;
     }
+    return false;
   },
 
   // Settings
   listenToSettings: (callback: (settings: any) => void) => {
-    return onSnapshot(doc(db, 'settings', 'global'), (doc) => {
-      callback(doc.data() || { maintenanceMode: false });
-    });
+    callback(Storage.get(KEYS.SETTINGS, { maintenanceMode: false }));
+    return store.subscribe(KEYS.SETTINGS, callback);
   },
 
   setMaintenanceMode: async (status: boolean) => {
-    await setDoc(doc(db, 'settings', 'global'), { maintenanceMode: status }, { merge: true });
+    const settings = Storage.get(KEYS.SETTINGS, { maintenanceMode: false });
+    settings.maintenanceMode = status;
+    Storage.set(KEYS.SETTINGS, settings);
+  },
+
+  getPaymentSettings: async (): Promise<PaymentSettings | null> => {
+    return Storage.get<PaymentSettings | null>(KEYS.PAYMENT_SETTINGS, null);
+  },
+
+  listenToPaymentSettings: (callback: (settings: PaymentSettings | null) => void) => {
+    callback(Storage.get<PaymentSettings | null>(KEYS.PAYMENT_SETTINGS, null));
+    return store.subscribe(KEYS.PAYMENT_SETTINGS, callback);
+  },
+
+  savePaymentSettings: async (settings: Omit<PaymentSettings, 'id'>) => {
+    Storage.set(KEYS.PAYMENT_SETTINGS, { ...settings, id: 'payment' });
+  },
+
+  promoteToAdmin: async (uid: string, email: string = 'admin@mwstore.com') => {
+    const admins = Storage.get<Record<string, any>>(KEYS.ADMINS, {});
+    admins[uid] = { isAdmin: true, email };
+    Storage.set(KEYS.ADMINS, admins);
+    return true;
+  },
+
+  // Vouchers
+  getVouchers: async (username: string, isAdmin: boolean): Promise<Voucher[]> => {
+    const vouchers = Storage.get<Voucher[]>(KEYS.VOUCHERS, []);
+    if (isAdmin) return vouchers;
+    return vouchers.filter(v => v.recipient === username);
+  },
+
+  listenToVouchers: (username: string, isAdmin: boolean, callback: (vouchers: Voucher[]) => void) => {
+    const fetch = () => {
+      const vouchers = Storage.get<Voucher[]>(KEYS.VOUCHERS, []);
+      callback(isAdmin ? vouchers : vouchers.filter(v => v.recipient === username));
+    };
+    fetch();
+    return store.subscribe(KEYS.VOUCHERS, fetch);
+  },
+
+  createVoucher: async (voucher: Omit<Voucher, 'id'>) => {
+    const vouchers = Storage.get<Voucher[]>(KEYS.VOUCHERS, []);
+    vouchers.push({ ...voucher, id: voucher.code } as Voucher);
+    Storage.set(KEYS.VOUCHERS, vouchers);
+  },
+
+  deleteVoucher: async (voucherId: string) => {
+    const vouchers = Storage.get<Voucher[]>(KEYS.VOUCHERS, []);
+    Storage.set(KEYS.VOUCHERS, vouchers.filter(v => v.id !== voucherId));
+  },
+
+  redeemVoucher: async (code: string) => {
+    const vouchers = Storage.get<Voucher[]>(KEYS.VOUCHERS, []);
+    const index = vouchers.findIndex(v => v.code === code);
+    if (index !== -1) {
+      vouchers[index].isUsed = true;
+      vouchers[index].isActive = false;
+      Storage.set(KEYS.VOUCHERS, vouchers);
+    }
+  },
+
+  validateVoucher: async (code: string, username?: string): Promise<Voucher | null> => {
+    const vouchers = Storage.get<Voucher[]>(KEYS.VOUCHERS, []);
+    const voucher = vouchers.find(v => v.code === code);
+    if (voucher && voucher.isActive && !voucher.isUsed) {
+        if (voucher.recipient && voucher.recipient !== username) return null;
+        return voucher;
+    }
+    return null;
+  },
+  
+  // Dummy checkAndGrantReward for compatibility
+  checkAndGrantReward: async (username: string): Promise<{ rewarded: boolean, amount: number }> => {
+      return { rewarded: false, amount: 0 };
+  },
+  
+  deleteUser: async (username: string) => {
+      const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
+      delete users[username];
+      Storage.set(KEYS.USERS, users);
+  },
+  
+  deleteOrderHistoryByUsername: async (username: string) => {
+      const orders = Storage.get<Order[]>(KEYS.ORDERS, []);
+      Storage.set(KEYS.ORDERS, orders.filter(o => o.username !== username));
+  },
+  
+  deleteChatByUsername: async (username: string) => {
+      const msgs = Storage.get<Message[]>(KEYS.MESSAGES, []);
+      Storage.set(KEYS.MESSAGES, msgs.filter(m => m.sender !== username && m.recipient !== username));
   }
 };

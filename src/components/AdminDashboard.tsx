@@ -1,21 +1,13 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { Package, Search, TrendingUp, DollarSign, ArrowLeft, Plus, X, Image as ImageIcon, Tag, Trash2, LayoutDashboard, ShoppingBasket, Wallet, RefreshCw, Smartphone, Users, User, Eye, EyeOff, ShieldCheck, AlertCircle, Settings, Mail, MessageCircle, LayoutGrid, Coins, ArrowUpRight, ArrowDownLeft, Clock, Copy, Check, CheckCircle, Menu } from 'lucide-react';
+import { Package, Search, TrendingUp, DollarSign, ArrowLeft, Plus, X, Image as ImageIcon, Tag, Trash2, LayoutDashboard, ShoppingBasket, Wallet, RefreshCw, Smartphone, Users, User, Eye, EyeOff, ShieldCheck, AlertCircle, Settings, Mail, MessageCircle, LayoutGrid, Coins, ArrowUpRight, ArrowDownLeft, Clock, Copy, Check, CheckCircle, Menu, LogOut, Loader2 } from 'lucide-react';
 import { formatIDR } from '@/constants';
-import { Order, Product, UserAccount, TopUpTransaction, Message } from '@/types';
+import { Order, Product, UserAccount, TopUpTransaction, Message, Voucher, PaymentSettings, PaymentGatewayConfig } from '@/types';
 import { APP_CONFIG } from '@/config';
 import { ApiService, safeParseDate } from '@/services/apiService';
-
-const chartData = [
-  { name: 'Sen', sales: 4000000 },
-  { name: 'Sel', sales: 3000000 },
-  { name: 'Rab', sales: 2000000 },
-  { name: 'Kam', sales: 2780000 },
-  { name: 'Jum', sales: 1890000 },
-  { name: 'Sab', sales: 2390000 },
-  { name: 'Min', sales: 3490000 },
-];
+import { compressImage } from '@/lib/imageUtils';
+import CommunityChat from '@/components/CommunityChat';
 
 interface AdminDashboardProps {
   orders: Order[];
@@ -26,6 +18,7 @@ interface AdminDashboardProps {
   onUpdateOrder?: (orderId: string, status: 'Pending' | 'Proses' | 'Selesai' | 'Gagal') => void;
   onDeleteUser?: (username: string) => void;
   onResetUserHistory?: (username: string) => void;
+  onLogout?: () => void;
   products: Product[];
   users: UserAccount[];
 }
@@ -39,16 +32,64 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onUpdateOrder,
   onDeleteUser,
   onResetUserHistory,
+  onLogout,
   products, 
   users 
 }) => {
-  const [activeTab, setActiveTab] = useState<'stats' | 'products' | 'system' | 'users' | 'orders' | 'messages' | 'topups'>('users');
+  // Calculate top users for the chart
+  const getTopUsersData = () => {
+    const userCounts: Record<string, number> = {};
+    orders.forEach(order => {
+        userCounts[order.username] = (userCounts[order.username] || 0) + 1;
+    });
+    
+    return Object.entries(userCounts)
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 7);
+  };
+
+  const topUsersChartData = getTopUsersData();
+  const COLORS = ['#3B82F6', '#60A5FA', '#93C5FD', '#2563EB', '#1D4ED8', '#1E40AF', '#1E3A8A'];
+  
+  const [activeTab, setActiveTab] = useState<'stats' | 'products' | 'system' | 'users' | 'orders' | 'messages' | 'topups' | 'community' | 'vouchers' | 'payment'>('users');
   const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
   const [selectedUserChat, setSelectedUserChat] = useState<string | null>(null);
   const [adminMessages, setAdminMessages] = useState<Message[]>([]);
+  const [hasNewCommunityMessage, setHasNewCommunityMessage] = useState(false);
+  const lastProcessedCommunityMsgId = useRef<string | null>(null);
+  const isInitialLoadAdmin = useRef(true);
   const [userTopUps, setUserTopUps] = useState<TopUpTransaction[]>([]);
+  const [vouchers, setVouchers] = useState<Voucher[]>([]);
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings | null>(null);
+  const [isSavingPayment, setIsSavingPayment] = useState(false);
+  const [isLoadingPayment, setIsLoadingPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  
+  const getDefaultExpiry = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 2);
+    // Format to yyyy-MM-ddThh:mm for datetime-local input
+    return d.toISOString().slice(0, 16);
+  };
+
+  const generateRandomCode = (prefix = 'MW') => {
+    return `${prefix}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+  };
+
+  const [newVoucher, setNewVoucher] = useState({
+    code: '',
+    amount: '',
+    type: 'fixed' as 'fixed' | 'percentage',
+    isActive: true,
+    minPurchase: '0',
+    expiryDate: getDefaultExpiry(),
+    recipient: ''
+  });
   const [newAdminMessage, setNewAdminMessage] = useState('');
-  const adminChatEndRef = React.useRef<HTMLDivElement>(null);
+  const [isUploadingChat, setIsUploadingChat] = useState(false);
+  const adminChatFileInputRef = useRef<HTMLInputElement>(null);
+  const adminChatEndRef = useRef<HTMLDivElement>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [userSearchQuery, setUserSearchQuery] = useState('');
@@ -63,23 +104,83 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
 
     const unsubMessages = ApiService.listenToMessages('', true, (msgs) => {
-      // Sort newest first
-      const sorted = [...msgs].sort((a, b) => {
-        const timeA = safeParseDate(a.timestamp).getTime();
-        const timeB = safeParseDate(b.timestamp).getTime();
-        return timeB - timeA;
-      });
-      setAdminMessages(sorted);
-    });
+      setAdminMessages(msgs);
+
+      // Handle community notification for admin
+      if (msgs.length > 0) {
+        const newestMsg = msgs[0];
+        if (newestMsg.id !== lastProcessedCommunityMsgId.current) {
+          lastProcessedCommunityMsgId.current = newestMsg.id;
+          
+          if (!isInitialLoadAdmin.current) {
+            if (newestMsg.recipient === 'community' && newestMsg.sender !== 'admin') {
+              setHasNewCommunityMessage(true);
+            }
+          }
+        }
+        isInitialLoadAdmin.current = false;
+      }
+    }, 'all');
 
     const unsubTopUps = ApiService.listenToTopUps('', true, (data) => {
       setUserTopUps(data);
     });
 
+    const unsubVouchers = ApiService.listenToVouchers('', true, (data) => {
+      setVouchers(data);
+    });
+
+    const fetchPaymentSettings = async (retryCount = 0) => {
+      try {
+        console.log(`AdminDashboard: Fetching payment settings (attempt ${retryCount + 1})...`);
+        const settings = await ApiService.getPaymentSettings();
+        if (settings) {
+          setPaymentSettings(settings);
+          setPaymentError(null);
+        } else {
+          // If settings is null but no error was thrown, it means handleFirestoreError caught it
+          // Check if auth is actually working
+          if (!ApiService.getCurrentUser()) {
+             setPaymentError("Akses Ditolak: Anda tidak memiliki izin untuk melihat pengaturan pembayaran.");
+          } else {
+              // Init default if not found (but no error)
+              setPaymentSettings({
+                id: 'payment',
+                gateways: [
+                  { provider: 'Pak Kasir', merchantCode: '', apiKey: '', privateKey: '', baseUrl: '', isActive: false, mode: 'Production', slug: '' },
+                  { provider: 'Manual', merchantCode: '', apiKey: '', privateKey: '', baseUrl: '', isActive: true, mode: 'Production', slug: '' }
+                ],
+                updatedAt: new Date().toISOString(),
+                updatedBy: 'admin'
+              });
+          }
+        }
+      } catch (err: any) {
+        console.warn("AdminDashboard: Error loading payment settings:", err);
+        
+        const isAuthDisabled = err.message?.includes('AUTHENTICATION_DISABLED');
+        const isPermissionError = err.message?.includes('permissions') || err.message?.includes('PERMISSION_DENIED');
+        
+        if (isAuthDisabled) {
+          setPaymentError("Sistem Error: Login anonim dinonaktifkan di Firebase Console. Harap aktifkan Otentikasi Anonim di Firebase Console.");
+        } else if (isPermissionError && retryCount < 5) {
+          console.log(`AdminDashboard: Permission delay or auth sync required, retrying in 3s... (retry ${retryCount + 1}/5)`);
+          setTimeout(() => fetchPaymentSettings(retryCount + 1), 3000);
+        } else {
+          setPaymentError("Gagal memuat pengaturan pembayaran. Mohon pastikan akun Anda memiliki akses Admin.");
+        }
+      } finally {
+        setIsLoadingPayment(false);
+      }
+    };
+
+    fetchPaymentSettings();
+
     return () => {
       unsubMaintenance();
       unsubMessages();
       unsubTopUps();
+      unsubVouchers();
     };
   }, []);
 
@@ -90,7 +191,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   useEffect(() => {
     if (selectedUserChat && activeTab === 'messages' && adminMessages.length > 0) {
       const messagesToMark = adminMessages
-        .filter(m => (m.sender === selectedUserChat) && !m.read && m.sender !== 'admin')
+        .filter(m => m.sender === selectedUserChat && m.recipient !== 'community' && !m.read && m.sender !== 'admin')
         .map(m => m.id as string);
       
       if (messagesToMark.length > 0) {
@@ -105,7 +206,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleMarkAllMessagesRead = async () => {
     const unreadIds = adminMessages
-      .filter(m => m.sender !== 'admin' && !m.read)
+      .filter(m => m.sender !== 'admin' && m.recipient !== 'community' && !m.read)
       .map(m => m.id as string);
     
     if (unreadIds.length > 0) {
@@ -117,35 +218,60 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const handleSendAdminReply = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newAdminMessage.trim() || !selectedUserChat) return;
+  const handleSendAdminReply = async (e?: React.FormEvent, imageUrl?: string) => {
+    if (e) e.preventDefault();
+    if (!newAdminMessage.trim() && !imageUrl) return;
+    if (!selectedUserChat) return;
 
-    // We need to find the recipient message to get their senderUid if possible
-    // Or just use the username
-    const lastUserMsg = adminMessages.find(m => m.sender === selectedUserChat);
-    const recipientUid = lastUserMsg?.senderUid || '';
+    const recipient = selectedUserChat.toLowerCase().trim();
 
     const newMessage: Message = {
        id: Math.floor(100000 + Math.random() * 900000).toString(),
        sender: 'admin',
-       recipient: selectedUserChat,
+       recipient: recipient,
        content: newAdminMessage,
+       imageUrl: imageUrl,
        timestamp: new Date().toISOString(),
-       read: true
+       read: false // Mark as unread for the user
     };
 
-    await ApiService.sendMessage(newMessage, 'admin'); // Admin UID could be 'admin' or something else
+    await ApiService.sendMessage(newMessage, 'admin');
     setNewAdminMessage('');
   };
 
+  const handleAdminChatImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingChat(true);
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const base64 = event.target?.result as string;
+        const compressed = await compressImage(base64);
+        await handleSendAdminReply(undefined, compressed);
+      } catch (error) {
+        console.error("Compression error:", error);
+        alert("Gagal memproses gambar.");
+      } finally {
+        setIsUploadingChat(false);
+        if (adminChatFileInputRef.current) adminChatFileInputRef.current.value = '';
+      }
+    };
+    reader.onerror = () => {
+      alert("Gagal membaca file.");
+      setIsUploadingChat(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
   const getUserLastMessage = (username: string) => {
-    const userMsgs = adminMessages.filter(m => m.sender === username || m.recipient === username);
+    const userMsgs = adminMessages.filter(m => (m.sender === username || m.recipient === username) && m.recipient !== 'community');
     return userMsgs[0]; // Messages are stored newest first in ApiService.getMessages
   };
 
   const getUnreadCount = (username: string) => {
-    return adminMessages.filter(m => m.sender === username && !m.read).length;
+    return adminMessages.filter(m => m.sender === username && m.recipient !== 'community' && !m.read).length;
   };
 
   const toggleMaintenance = async () => {
@@ -227,10 +353,159 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
+  const handleCancelTopUp = async (topupId: string) => {
+    if (confirm("Yakin ingin membatalkan request top up ini?")) {
+      await ApiService.updateTopUpStatus(topupId, 'Gagal');
+      alert('Top Up Dibatalkan!');
+    }
+  };
+
+  const handleRejectTopUp = async (topupId: string) => {
+    await handleDeleteTopUp(topupId);
+  };
+
+  const handleDeleteTopUp = async (topupId: string) => {
+    if (confirm("Hapus riwayat top up ini dari database?")) {
+      await ApiService.deleteTopUp(topupId);
+    }
+  };
+
+  const handleDeleteChat = async (username: string) => {
+    if (confirm(`Hapus semua percakapan dengan ${username}? Tindakan ini tidak bisa dibatalkan.`)) {
+      // Optimistic update
+      setAdminMessages(prev => prev.filter(m => m.sender !== username && m.recipient !== username));
+      await ApiService.deleteChatByUsername(username);
+      setSelectedUserChat(null);
+    }
+  };
+
+  const handleDeleteSingleMessage = async (messageId: string) => {
+    if (confirm("Hapus pesan ini?")) {
+      // Optimistic update
+      setAdminMessages(prev => prev.filter(m => m.id !== messageId));
+      await ApiService.deleteMessage(messageId);
+    }
+  };
+
+  const handleDeleteAllMessages = async () => {
+    if (confirm("Apakah Anda yakin ingin menghapus SEMUA pesan? Tindakan ini akan mengosongkan seluruh riwayat chat semua pengguna.")) {
+      // Optimistic update
+      setAdminMessages([]);
+      await ApiService.deleteAllMessages();
+      setSelectedUserChat(null);
+    }
+  };
+
+  const handleDeleteAllTopUps = async () => {
+    if (confirm("Apakah Anda yakin ingin menghapus SEMUA riwayat top up?")) {
+      await ApiService.deleteAllTopUps();
+    }
+  };
+
+  const handleDeleteAllOrders = async () => {
+    if (confirm("Apakah Anda yakin ingin menghapus SEMUA riwayat pesanan?")) {
+      await ApiService.deleteAllOrders();
+    }
+  };
+
+  const handleDeleteUser = async (username: string) => {
+    if (confirm(`Yakin ingin menghapus akun ${username}?`)) {
+      await ApiService.deleteUser(username);
+      alert('Akun dihapus.');
+      onUpdateUsers?.(users.filter(u => u.username !== username));
+    }
+  };
+
+  const handleDeleteUserHistory = async (username: string) => {
+    if (confirm(`Yakin ingin menghapus riwayat transaksi ${username}?`)) {
+      await ApiService.deleteOrderHistoryByUsername(username);
+      alert('Riwayat dihapus.');
+    }
+  };
+
   const handleClearAllProducts = async () => {
     if (confirm("Apakah Anda yakin ingin mengosongkan semua produk? Tindakan ini tidak dapat dibatalkan.")) {
-      await ApiService.clearProducts();
+      await ApiService.saveProducts([]);
       alert("Katalog telah dikosongkan.");
+    }
+  };
+
+  const handleCreateVoucher = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // If no code, generate one automatically
+    const codeToUse = newVoucher.code.trim().toUpperCase() || generateRandomCode();
+    const amountToUse = Number(newVoucher.amount) || 0;
+
+    await ApiService.createVoucher({
+      code: codeToUse,
+      amount: amountToUse,
+      type: newVoucher.type,
+      isActive: newVoucher.isActive,
+      minPurchase: Number(newVoucher.minPurchase),
+      expiryDate: newVoucher.expiryDate || getDefaultExpiry(),
+      recipient: newVoucher.recipient.trim().toLowerCase() || ''
+    });
+
+    setNewVoucher({
+      code: '',
+      amount: '',
+      type: 'fixed',
+      isActive: true,
+      minPurchase: '0',
+      expiryDate: getDefaultExpiry(),
+      recipient: ''
+    });
+    alert(`Voucher ${codeToUse} berhasil dibuat!`);
+  };
+
+  const handleQuickGiftVoucher = async (username: string, amount: number) => {
+    const code = generateRandomCode('GIFT');
+    const expiry = getDefaultExpiry();
+    
+    await ApiService.createVoucher({
+      code,
+      amount,
+      type: 'fixed',
+      isActive: true,
+      minPurchase: 0,
+      expiryDate: expiry,
+      recipient: username.toLowerCase(),
+      description: `Hadiah langsung untuk ${username}`,
+      createdAt: new Date().toISOString()
+    });
+    
+    // Kirim pesan notifikasi
+    await ApiService.sendMessage({
+      sender: 'admin',
+      recipient: username,
+      content: `🎁 Anda mendapatkan hadiah Voucher Diskon senilai ${formatIDR(amount)}!\n\nKode: ${code}\n\nBerlaku selama 2 hari. Gunakan saat checkout!`,
+      timestamp: new Date().toISOString(),
+      read: false
+    }, 'admin');
+
+    alert(`Voucher hadiah ${formatIDR(amount)} berhasil dikirim ke ${username}`);
+  };
+
+  const handleSavePaymentSettings = async () => {
+    if (!paymentSettings) return;
+    setIsSavingPayment(true);
+    await ApiService.savePaymentSettings(paymentSettings);
+    setIsSavingPayment(false);
+    alert("Konfigurasi Pembayaran Berhasil Disimpan!");
+  };
+
+  const updateGatewayConfig = (provider: string, updates: Partial<any>) => {
+    if (!paymentSettings) return;
+    const newGateways = paymentSettings.gateways.map(g => 
+      g.provider === (provider as any) ? { ...g, ...updates } : g
+    );
+    setPaymentSettings({ ...paymentSettings, gateways: newGateways });
+  };
+
+  const handleDeleteVoucher = async (code: string) => {
+    if (confirm(`Hapus voucher ${code}?`)) {
+      await ApiService.deleteVoucher(code);
     }
   };
 
@@ -334,7 +609,27 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const COLORS = ['#3B82F6', '#60A5FA', '#93C5FD', '#2563EB', '#1D4ED8', '#1E40AF', '#1E3A8A'];
+  const getChatParticipants = () => {
+    const participantsMap = new Map<string, string>(); // lowercase -> original case (keep one)
+    adminMessages.forEach(m => {
+      if (m.recipient !== 'community') {
+        if (m.sender !== 'admin') {
+          participantsMap.set(m.sender.toLowerCase(), m.sender);
+        }
+        if (m.recipient !== 'admin') {
+          participantsMap.set(m.recipient.toLowerCase(), m.recipient);
+        }
+      }
+    });
+    
+    return Array.from(participantsMap.values()).sort((a, b) => {
+      const lastA = getUserLastMessage(a);
+      const lastB = getUserLastMessage(b);
+      return safeParseDate(lastB?.timestamp).getTime() - safeParseDate(lastA?.timestamp).getTime();
+    });
+  };
+
+  const chatParticipants = getChatParticipants();
 
   return (
     <div className="min-h-screen bg-[#f8fafc] flex overflow-x-hidden">
@@ -385,10 +680,28 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                </div>
                <span>Pesan Masuk</span>
             </div>
-            {adminMessages.filter(m => m.sender !== 'admin' && !m.read).length > 0 && (
-              <span className="flex items-center justify-center w-6 h-6 bg-red-600 text-white text-[9px] font-black rounded-full border-2 border-white shadow-sm animate-in zoom-in duration-300">
-                {adminMessages.filter(m => m.sender !== 'admin' && !m.read).length}
-              </span>
+            {adminMessages.filter(m => m.sender !== 'admin' && m.recipient !== 'community' && !m.read).length > 0 && (
+              <div className="relative">
+                <span className="flex items-center justify-center w-6 h-6 bg-red-600 text-white text-[9px] font-black rounded-full border-2 border-white shadow-sm animate-in zoom-in duration-300">
+                  {adminMessages.filter(m => m.sender !== 'admin' && m.recipient !== 'community' && !m.read).length}
+                </span>
+                <span className="absolute inset-0 bg-red-600 rounded-full animate-ping opacity-20"></span>
+              </div>
+            )}
+          </button>
+
+          <button 
+            onClick={() => { setActiveTab('community'); setIsSidebarOpen(false); setHasNewCommunityMessage(false); }}
+            className={`w-full flex items-center justify-between px-6 py-4 text-[10px] font-black uppercase tracking-widest rounded-[1.5rem] transition-all group ${activeTab === 'community' ? 'bg-orange-600 text-white shadow-xl shadow-orange-100' : 'text-gray-400 hover:bg-gray-50 hover:text-orange-600'}`}
+          >
+            <div className="flex items-center gap-4">
+              <div className={`p-2 rounded-xl transition-colors ${activeTab === 'community' ? 'bg-white/20' : 'bg-gray-50 group-hover:bg-orange-50'}`}>
+                 <Users className="w-4 h-4" />
+              </div>
+              <span>Grup Komunitas</span>
+            </div>
+            {hasNewCommunityMessage && activeTab !== 'community' && (
+              <span className="w-2.5 h-2.5 bg-red-600 border-2 border-white rounded-full animate-pulse shadow-sm"></span>
             )}
           </button>
 
@@ -403,7 +716,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                <span>Top Up Request</span>
             </div>
             {userTopUps.filter(t => t.status === 'Pending').length > 0 && (
-              <span className="flex items-center justify-center min-w-[24px] h-6 bg-orange-600 border-2 border-white text-white text-[10px] font-black rounded-full shadow-lg">
+              <span className="flex items-center justify-center min-w-[24px] h-6 bg-red-600 border-2 border-white text-white text-[10px] font-black rounded-full shadow-lg animate-pulse">
                 {userTopUps.filter(t => t.status === 'Pending').length}
               </span>
             )}
@@ -430,6 +743,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </button>
 
           <button 
+            onClick={() => { setActiveTab('vouchers'); setIsSidebarOpen(false); }}
+            className={`w-full flex items-center gap-4 px-6 py-4 text-[10px] font-black uppercase tracking-widest rounded-[1.5rem] transition-all group ${activeTab === 'vouchers' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-gray-400 hover:bg-gray-50 hover:text-indigo-600'}`}
+          >
+            <div className={`p-2 rounded-xl transition-colors ${activeTab === 'vouchers' ? 'bg-white/20' : 'bg-gray-50 group-hover:bg-indigo-50'}`}>
+               <Tag className="w-4 h-4" />
+            </div>
+            <span>Kelola Voucher</span>
+          </button>
+
+          <button 
             onClick={() => { setActiveTab('orders'); setIsSidebarOpen(false); }}
             className={`w-full flex items-center justify-between px-6 py-4 text-[10px] font-black uppercase tracking-widest rounded-[1.5rem] transition-all group ${activeTab === 'orders' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-gray-400 hover:bg-gray-50 hover:text-indigo-600'}`}
           >
@@ -440,7 +763,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                <span>Semua Pesanan</span>
             </div>
             {orders.filter(o => o.status === 'Pending').length > 0 && (
-              <span className="flex items-center justify-center min-w-[24px] h-6 bg-blue-500 border-2 border-white text-white text-[10px] font-black rounded-full shadow-lg">
+              <span className="flex items-center justify-center min-w-[24px] h-6 bg-red-600 border-2 border-white text-white text-[10px] font-black rounded-full shadow-lg animate-pulse">
                 {orders.filter(o => o.status === 'Pending').length}
               </span>
             )}
@@ -448,6 +771,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           <div className="h-4"></div>
           <p className="px-6 text-[8px] font-black text-gray-300 uppercase tracking-[0.2em] mb-2">Konfigurasi</p>
+          
+          <button 
+            onClick={() => { setActiveTab('payment'); setIsSidebarOpen(false); }}
+            className={`w-full flex items-center gap-4 px-6 py-4 text-[10px] font-black uppercase tracking-widest rounded-[1.5rem] transition-all group ${activeTab === 'payment' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-gray-400 hover:bg-gray-50 hover:text-indigo-600'}`}
+          >
+            <div className={`p-2 rounded-xl transition-colors ${activeTab === 'payment' ? 'bg-white/20' : 'bg-gray-50 group-hover:bg-indigo-50'}`}>
+               <ShieldCheck className="w-4 h-4" />
+            </div>
+            <span>Integrasi Gateway</span>
+          </button>
+
           <button 
             onClick={() => { setActiveTab('system'); setIsSidebarOpen(false); }}
             className={`w-full flex items-center gap-4 px-6 py-4 text-[10px] font-black uppercase tracking-widest rounded-[1.5rem] transition-all group ${activeTab === 'system' ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-gray-400 hover:bg-gray-50 hover:text-indigo-600'}`}
@@ -459,13 +793,20 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </button>
         </nav>
 
-        <div className="p-6 border-t border-gray-50">
+        <div className="p-6 border-t border-gray-50 space-y-2">
            <button 
              onClick={onBack}
-             className="w-full flex items-center gap-4 px-6 py-4 text-[10px] font-black uppercase tracking-widest rounded-[1.5rem] text-red-500 hover:bg-red-50 transition-all"
+             className="w-full flex items-center gap-4 px-6 py-3 text-[10px] font-black uppercase tracking-widest rounded-2xl text-blue-600 hover:bg-blue-50 transition-all border border-blue-50"
            >
-             <ArrowLeft className="w-5 h-5" />
-             Keluar Panel
+             <ArrowLeft className="w-4 h-4" />
+             Kembali ke Toko
+           </button>
+           <button 
+             onClick={onLogout}
+             className="w-full flex items-center gap-4 px-6 py-3 text-[10px] font-black uppercase tracking-widest rounded-2xl text-red-600 hover:bg-red-50 transition-all border border-red-50"
+           >
+             <LogOut className="w-4 h-4" />
+             Keluar Akun
            </button>
         </div>
       </aside>
@@ -480,14 +821,15 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                  >
                     <Menu className="w-6 h-6" />
                  </button>
-                 {(adminMessages.filter(m => m.sender !== 'admin' && !m.read).length + 
+                 {(adminMessages.filter(m => m.sender !== 'admin' && m.recipient !== 'community' && !m.read).length + 
                    userTopUps.filter(t => t.status === 'Pending').length +
-                   orders.filter(o => o.status === 'Pending').length) > 0 && (
+                   orders.filter(o => o.status === 'Pending').length +
+                   (hasNewCommunityMessage ? 1 : 0)) > 0 && (
                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-600 border-2 border-white rounded-full lg:hidden block animate-pulse"></span>
                  )}
               </div>
               <div>
-                 <h2 className="text-sm font-black text-gray-900 uppercase tracking-widest">
+                 <h2 className="text-sm font-black text-gray-900 uppercase tracking-widest flex items-center gap-2">
                     {activeTab === 'stats' && 'Statistik & Ringkasan'}
                  {activeTab === 'messages' && 'Layanan Pelanggan (Inbox)'}
                  {activeTab === 'topups' && 'Konfirmasi Pembayaran Saldo'}
@@ -495,6 +837,18 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                  {activeTab === 'products' && 'Manajemen Katalog'}
                  {activeTab === 'orders' && 'Riwayat Transaksi Pelanggan'}
                  {activeTab === 'system' && 'Pengaturan Sistem'}
+                 {activeTab === 'community' && 'Obrolan Komunitas'}
+                 
+                 {/* Header dot indicators */}
+                 {activeTab !== 'messages' && adminMessages.filter(m => m.sender !== 'admin' && m.recipient !== 'community' && !m.read).length > 0 && (
+                   <span className="w-2 h-2 bg-red-600 rounded-full animate-pulse"></span>
+                 )}
+                 {activeTab !== 'community' && hasNewCommunityMessage && (
+                   <span className="w-2 h-2 bg-red-600 rounded-full animate-pulse shadow-[0_0_8px_rgba(220,38,38,0.5)]"></span>
+                 )}
+                 {activeTab !== 'topups' && userTopUps.filter(t => t.status === 'Pending').length > 0 && (
+                   <span className="w-2 h-2 bg-red-600 rounded-full animate-pulse"></span>
+                 )}
               </h2>
               <p className="text-[10px] font-bold text-gray-400">Selamat datang kembali, Admin MWStore</p>
            </div>
@@ -505,10 +859,23 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                  <div className={`w-2 h-2 rounded-full ${isMaintenance ? 'bg-orange-500' : 'bg-green-500'} animate-pulse`}></div>
                  <span className="text-[9px] font-black uppercase tracking-widest">{isMaintenance ? 'Maintenance' : 'Server Live'}</span>
               </div>
+              
+              <button 
+                onClick={onLogout}
+                className="flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 rounded-2xl border border-red-100 font-black text-[10px] uppercase tracking-widest hover:bg-red-100 transition-all"
+              >
+                <LogOut className="w-4 h-4" />
+                Keluar
+              </button>
            </div>
         </header>
 
         <main className="p-8 pb-32 flex-1">
+        {activeTab === 'community' && (
+           <div className="animate-in slide-in-from-bottom-5 duration-500">
+              <CommunityChat username="admin" isAdmin={true} onBack={() => setActiveTab('stats')} />
+           </div>
+        )}
         {activeTab === 'messages' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in slide-in-from-bottom-5 duration-500 min-h-[600px] h-[calc(100vh-280px)]">
             {/* List Chat */}
@@ -516,37 +883,37 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                <div className="p-6 border-b border-gray-50 flex flex-col gap-2">
                   <div className="flex justify-between items-center text-indigo-600">
                     <h3 className="font-black uppercase tracking-[0.2em] text-[10px]">Layanan Pelanggan</h3>
-                    <button 
-                      onClick={handleMarkAllMessagesRead}
-                      className="p-1.5 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
-                      title="Tandai Semua Dibaca"
-                    >
-                      <CheckCircle className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                       <button 
+                         onClick={handleDeleteAllMessages}
+                         className="p-1.5 bg-red-50 hover:bg-red-100 rounded-lg transition-colors text-red-500"
+                         title="Hapus Semua Pesan Di Sistem"
+                       >
+                         <Trash2 className="w-4 h-4" />
+                       </button>
+                       <button 
+                         onClick={handleMarkAllMessagesRead}
+                         className="p-1.5 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
+                         title="Tandai Semua Dibaca"
+                       >
+                         <CheckCircle className="w-4 h-4" />
+                       </button>
+                    </div>
                   </div>
                   <h3 className="font-black text-gray-900 uppercase tracking-widest text-xs">Daftar Percakapan</h3>
-                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">Total {adminMessages.filter(m => m.sender !== 'admin' && !m.read).length} Pesan Belum Dibaca</p>
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">Total {adminMessages.filter(m => m.sender !== 'admin' && m.recipient !== 'community' && !m.read).length} Pesan Belum Dibaca</p>
                </div>
                 <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                  {users
-                    .filter(u => u.username !== 'admin')
-                    .sort((a, b) => {
-                      const lastA = getUserLastMessage(a.username);
-                      const lastB = getUserLastMessage(b.username);
-                      if (!lastA) return 1;
-                      if (!lastB) return -1;
-                      return safeParseDate(lastB.timestamp).getTime() - safeParseDate(lastA.timestamp).getTime();
-                    })
-                    .map(user => {
-                     const lastMsg = getUserLastMessage(user.username);
-                     const unread = getUnreadCount(user.username);
+                  {chatParticipants.map(participantUsername => {
+                     const lastMsg = getUserLastMessage(participantUsername);
+                     const unread = getUnreadCount(participantUsername);
                      return (
                         <button 
-                          key={user.username}
+                          key={participantUsername}
                           onClick={() => {
-                            setSelectedUserChat(user.username);
+                            setSelectedUserChat(participantUsername);
                             const unreadIds = adminMessages
-                              .filter(m => m.sender === user.username && !m.read)
+                              .filter(m => m.sender === participantUsername && !m.read)
                               .map(m => m.id);
                             
                             if (unreadIds.length > 0) {
@@ -558,19 +925,24 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             }
                           }}
                           className={`w-full p-4 rounded-2xl flex items-center gap-4 transition-all border-2 ${
-                            selectedUserChat === user.username 
+                            selectedUserChat === participantUsername 
                               ? 'bg-blue-50 border-blue-600 shadow-md' 
                               : 'bg-white border-transparent hover:bg-gray-50'
                           }`}
                         >
                            <div className="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center font-black shrink-0">
-                              {user.username.charAt(0).toUpperCase()}
+                              {participantUsername.charAt(0).toUpperCase()}
                            </div>
                            <div className="flex-1 text-left min-w-0">
                               <div className="flex justify-between items-center mb-1">
-                                 <span className="font-black text-gray-900 truncate">{user.username}</span>
+                                 <div className="flex items-center gap-2 min-w-0">
+                                   <span className="font-black text-gray-900 truncate">{participantUsername}</span>
+                                   {unread > 0 && (
+                                     <span className="w-2 h-2 bg-red-600 rounded-full animate-pulse shadow-[0_0_8px_rgba(220,38,38,0.5)]"></span>
+                                   )}
+                                 </div>
                                  {unread > 0 && (
-                                   <span className="px-1.5 py-0.5 bg-red-500 text-white text-[8px] font-black rounded-full leading-none">
+                                   <span className="px-1.5 py-0.5 bg-red-500 text-white text-[8px] font-black rounded-full leading-none shrink-0 ml-2">
                                       {unread}
                                    </span>
                                  )}
@@ -582,6 +954,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </button>
                      );
                   })}
+                  {chatParticipants.length === 0 && (
+                    <div className="text-center py-10">
+                      <p className="text-xs font-black text-gray-300 uppercase">Tidak ada percakapan</p>
+                    </div>
+                  )}
                </div>
             </div>
 
@@ -599,14 +976,23 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               <p className="text-[9px] font-black uppercase opacity-60">Sedang Chatting</p>
                            </div>
                         </div>
-                        <button onClick={() => setSelectedUserChat(null)} className="p-2 bg-white/10 rounded-xl hover:bg-white/20">
-                           <X className="w-5 h-5" />
-                        </button>
+                        <div className="flex items-center gap-2">
+                           <button 
+                             onClick={() => handleDeleteChat(selectedUserChat)} 
+                             className="p-2 bg-white/10 rounded-xl hover:bg-red-500 transition-colors"
+                             title="Hapus Semua Pesan"
+                           >
+                              <Trash2 className="w-5 h-5" />
+                           </button>
+                           <button onClick={() => setSelectedUserChat(null)} className="p-2 bg-white/10 rounded-xl hover:bg-white/20">
+                              <X className="w-5 h-5" />
+                           </button>
+                        </div>
                      </div>
                      
                      <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-gray-50/50">
                         {adminMessages
-                          .filter(m => m.sender === selectedUserChat || m.recipient === selectedUserChat)
+                          .filter(m => (m.sender === selectedUserChat || m.recipient === selectedUserChat) && m.recipient !== 'community')
                           .sort((a, b) => {
                             const timeA = safeParseDate(a.timestamp).getTime();
                             const timeB = safeParseDate(b.timestamp).getTime();
@@ -614,12 +1000,29 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           })
                           .map(m => (
                             <div key={m.id} className={`flex ${m.sender === 'admin' ? 'justify-end' : 'justify-start'}`}>
-                               <div className={`max-w-[70%] p-4 rounded-xl shadow-sm ${
+                               <div className={`max-w-[70%] p-4 rounded-xl shadow-sm relative group ${
                                   m.sender === 'admin' 
                                     ? 'bg-blue-600 text-white rounded-tr-none' 
                                     : 'bg-white text-gray-900 rounded-tl-none border border-gray-100'
                                }`}>
-                                  <p className="text-sm font-medium">{m.content}</p>
+                                  <button 
+                                    onClick={() => handleDeleteSingleMessage(m.id!)}
+                                    className={`absolute -top-1 ${m.sender === 'admin' ? '-left-1' : '-right-1'} w-6 h-6 bg-white border border-gray-100 rounded-full flex items-center justify-center text-red-500 hover:bg-red-50 transition-all shadow-sm z-10`}
+                                    title="Hapus untuk Semua"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                  {m.imageUrl && (
+                                    <div className="mb-2 rounded-lg overflow-hidden border border-white/20">
+                                      <img 
+                                        src={m.imageUrl} 
+                                        alt="Sent content" 
+                                        className="max-w-full max-h-64 object-contain cursor-pointer hover:opacity-90 transition-opacity"
+                                        onClick={() => window.open(m.imageUrl, '_blank')}
+                                      />
+                                    </div>
+                                  )}
+                                  {m.content && <p className="text-sm font-medium">{m.content}</p>}
                                   <p className={`text-[8px] mt-2 opacity-50 font-black flex items-center gap-1 ${m.sender === 'admin' ? 'justify-end' : ''}`}>
                                      <Clock className="w-2 h-2" /> {(() => {
                                         const date = safeParseDate(m.timestamp);
@@ -635,19 +1038,39 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                      </div>
 
                      <form onSubmit={handleSendAdminReply} className="p-4 border-t border-gray-50 bg-white">
-                        <div className="relative">
+                        <div className="flex items-center gap-2">
+                           <div className="relative flex-1">
+                              <input 
+                                type="text"
+                                value={newAdminMessage}
+                                onChange={(e) => setNewAdminMessage(e.target.value)}
+                                placeholder={`Balas ${selectedUserChat}...`}
+                                className="w-full bg-gray-50 border-none rounded-2xl py-4 pl-6 pr-14 focus:ring-4 focus:ring-blue-500/10 outline-none font-bold text-gray-900"
+                              />
+                              <button 
+                                type="submit"
+                                disabled={!newAdminMessage.trim() && !isUploadingChat}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-50"
+                              >
+                                 <ArrowUpRight className="w-5 h-5" />
+                              </button>
+                           </div>
+                           
                            <input 
-                             type="text"
-                             value={newAdminMessage}
-                             onChange={(e) => setNewAdminMessage(e.target.value)}
-                             placeholder={`Balas ${selectedUserChat}...`}
-                             className="w-full bg-gray-50 border-none rounded-2xl py-4 pl-6 pr-14 focus:ring-4 focus:ring-blue-500/10 outline-none font-bold text-gray-900"
+                             type="file" 
+                             ref={adminChatFileInputRef}
+                             onChange={handleAdminChatImageUpload}
+                             accept="image/*"
+                             className="hidden"
                            />
+                           
                            <button 
-                             type="submit"
-                             className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 bg-indigo-600 text-white rounded-xl flex items-center justify-center shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95"
+                             type="button"
+                             onClick={() => adminChatFileInputRef.current?.click()}
+                             disabled={isUploadingChat}
+                             className="w-14 h-14 bg-gray-50 rounded-2xl flex items-center justify-center text-gray-400 hover:text-indigo-600 border-2 border-transparent hover:border-indigo-100 transition-all disabled:opacity-50"
                            >
-                              <ArrowUpRight className="w-5 h-5" />
+                              {isUploadingChat ? <Loader2 className="w-6 h-6 animate-spin text-indigo-600" /> : <ImageIcon className="w-6 h-6" />}
                            </button>
                         </div>
                      </form>
@@ -684,9 +1107,17 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                   Kelola Semua Pesanan
                </h2>
-               <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Total Pesanan:</span>
-                  <span className="px-3 py-1 bg-gray-100 rounded-lg text-xs font-black text-gray-600">{orders.length}</span>
+               <div className="flex items-center gap-3">
+                  <button 
+                    onClick={handleDeleteAllOrders}
+                    className="flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 rounded-xl text-[10px] font-black uppercase hover:bg-red-100 transition-all border border-red-100"
+                  >
+                    <Trash2 className="w-4 h-4" /> Hapus Semua
+                  </button>
+                  <div className="flex items-center gap-2">
+                     <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Total Pesanan:</span>
+                     <span className="px-3 py-1 bg-gray-100 rounded-lg text-xs font-black text-gray-600">{orders.length}</span>
+                  </div>
                </div>
             </div>
 
@@ -749,20 +1180,18 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                </h3>
                <div className="h-80 w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={chartData}>
+                    <BarChart data={topUsersChartData}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis 
                         dataKey="name" 
                         axisLine={false} 
                         tickLine={false} 
                         tick={{ fill: '#94a3b8', fontSize: 12, fontWeight: 700 }}
-                        dy={10}
                       />
                       <YAxis 
                         axisLine={false} 
                         tickLine={false} 
                         tick={{ fill: '#94a3b8', fontSize: 12, fontWeight: 700 }}
-                        tickFormatter={(value) => `Rp${value/1000000}jt`}
                       />
                       <Tooltip 
                         cursor={{ fill: '#f8fafc' }}
@@ -773,8 +1202,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           padding: '12px'
                         }}
                       />
-                      <Bar dataKey="sales" radius={[10, 10, 0, 0]}>
-                        {chartData.map((_entry, index) => (
+                      <Bar dataKey="count" radius={[10, 10, 0, 0]}>
+                        {topUsersChartData.map((_entry, index) => (
                           <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                         ))}
                       </Bar>
@@ -803,6 +1232,128 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
              </div>
           </div>
         )}
+
+        {activeTab === 'payment' && (
+          <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-bottom-5 duration-500 pb-20">
+             {isLoadingPayment ? (
+               <div className="bg-white p-20 rounded-[3rem] border border-gray-100 shadow-sm flex flex-col items-center justify-center text-center">
+                  <Loader2 className="w-12 h-12 animate-spin text-indigo-600 mb-4" />
+                  <p className="text-gray-500 font-bold">Memuat konfigurasi pembayaran...</p>
+               </div>
+             ) : paymentError ? (
+                <div className="bg-white p-12 rounded-[3rem] border border-gray-100 shadow-sm flex flex-col items-center justify-center text-center">
+                   <div className="w-20 h-20 bg-red-50 text-red-600 rounded-3xl flex items-center justify-center mb-6">
+                      <ShieldCheck className="w-10 h-10" />
+                   </div>
+                   <h3 className="text-xl font-black text-gray-900 mb-2 uppercase tracking-tighter">Akses Ditolak / Masalah Koneksi</h3>
+                   <p className="text-gray-500 font-medium max-w-md mb-8">{paymentError}</p>
+                   
+                    <div className="flex flex-col sm:flex-row gap-4">
+                       <button 
+                         onClick={() => window.location.reload()}
+                         className="px-8 py-3 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100"
+                       >
+                          Muat Ulang Halaman
+                       </button>
+                    </div>
+                </div>
+             ) : paymentSettings ? (
+               <div className="bg-white p-10 rounded-[3rem] border border-gray-100 shadow-sm">
+                  <div className="flex justify-between items-start mb-10">
+                     <h3 className="text-2xl font-black text-gray-900 flex items-center gap-4 uppercase tracking-tighter">
+                        <div className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl">
+                           <ShieldCheck className="w-6 h-6" />
+                        </div>
+                        Integrasi Payment Gateway
+                     </h3>
+                     <button 
+                       onClick={handleSavePaymentSettings}
+                       disabled={isSavingPayment}
+                       className="px-8 py-3 bg-indigo-600 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all flex items-center gap-2"
+                     >
+                       {isSavingPayment ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                       Simpan Perubahan
+                     </button>
+                  </div>
+
+                <div className="grid grid-cols-1 gap-12">
+                   {paymentSettings.gateways.filter(g => g.provider === 'Pak Kasir').map((gateway) => (
+                      <div key={gateway.provider} className="bg-gray-50/50 p-8 rounded-[2.5rem] border border-gray-100 space-y-6 relative overflow-hidden">
+                         <div className="flex justify-between items-center mb-4">
+                            <div className="flex items-center gap-4">
+                               <div className="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center font-black text-indigo-600 border border-gray-100">
+                                  {gateway.provider.charAt(0)}
+                               </div>
+                               <div>
+                                  <h4 className="text-lg font-black text-gray-900 tracking-tight">{gateway.provider} Automated</h4>
+                                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Konfigurasi API & Webhook</p>
+                               </div>
+                            </div>
+                            <button 
+                              onClick={() => updateGatewayConfig(gateway.provider, { isActive: !gateway.isActive })}
+                              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all focus:outline-none ${gateway.isActive ? 'bg-green-500 shadow-lg shadow-green-100' : 'bg-gray-200'}`}
+                            >
+                              <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${gateway.isActive ? 'translate-x-6' : 'translate-x-1'}`} />
+                            </button>
+                         </div>
+                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="space-y-2">
+                               <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">URL Slug / ID Toko Pak Kasir</label>
+                               <input 
+                                 type="text"
+                                 value={gateway.slug || ''}
+                                 onChange={(e) => updateGatewayConfig(gateway.provider, { slug: e.target.value })}
+                                 placeholder="Contoh: toko-saya"
+                                 className="w-full bg-white border-2 border-gray-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-bold text-gray-900 transition-all shadow-sm"
+                               />
+                            </div>
+                            <div className="space-y-2">
+                               <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">API Key</label>
+                               <input 
+                                 type="password"
+                                 value={gateway.apiKey}
+                                 onChange={(e) => updateGatewayConfig(gateway.provider, { apiKey: e.target.value })}
+                                 placeholder="API_KEY_HERE"
+                                 className="w-full bg-white border-2 border-gray-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-mono text-xs transition-all shadow-sm"
+                               />
+                            </div>
+                            <div className="md:col-span-2 space-y-2">
+                               <label className="text-[10px] font-black text-blue-400 uppercase tracking-widest ml-1">Webhook URL (Salin ke Dashboard Pak Kasir)</label>
+                               <input 
+                                 readOnly
+                                 value={`${window.location.origin}/api/webhook/pakkasir`}
+                                 className="w-full bg-blue-50 border-2 border-blue-100 rounded-2xl py-3.5 px-6 font-mono text-[10px] text-blue-600 outline-none shadow-sm cursor-copy"
+                                 onClick={(e) => {
+                                   const el = e.currentTarget;
+                                   el.select();
+                                   navigator.clipboard.writeText(el.value);
+                                   alert("Webhook URL disalin!");
+                                 }}
+                               />
+                            </div>
+                         </div>
+                      </div>
+                   ))}
+                </div>
+                
+                <div className="mt-12 p-8 bg-blue-50/50 rounded-[2.5rem] border border-blue-100">
+                   <div className="flex gap-4">
+                      <div className="p-3 bg-white rounded-2xl shadow-sm text-blue-600 h-fit">
+                         <AlertCircle className="w-6 h-6" />
+                      </div>
+                      <div>
+                         <h5 className="font-black text-blue-900 uppercase tracking-tight mb-1">Informasi Integrasi</h5>
+                         <p className="text-xs font-bold text-blue-700 leading-relaxed max-w-2xl">
+                            API Key dikirim terenkripsi untuk keamanan data Anda. 
+                            Silakan masukkan Slug dan API Key yang didapat dari Dashboard Pak Kasir Anda.
+                         </p>
+                      </div>
+                   </div>
+                </div>
+             </div>
+           ) : null}
+        </div>
+      )}
 
         {activeTab === 'system' && (
           <div className="max-w-3xl mx-auto space-y-8 animate-in slide-in-from-bottom-5 duration-500">
@@ -884,12 +1435,20 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                    </div>
                    Konfirmasi Top Up Manual
                 </h2>
-                <div className="flex items-center gap-2">
-                   <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Pending:</span>
-                   <span className="px-3 py-1 bg-orange-100 rounded-lg text-xs font-black text-orange-600">
-                     {userTopUps.filter(t => t.status === 'Pending').length}
-                   </span>
-                </div>
+                 <div className="flex items-center gap-3">
+                    <button 
+                      onClick={handleDeleteAllTopUps}
+                      className="flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 rounded-xl text-[10px] font-black uppercase hover:bg-red-100 transition-all border border-red-100"
+                    >
+                      <Trash2 className="w-4 h-4" /> Hapus Semua
+                    </button>
+                    <div className="flex items-center gap-2">
+                       <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Pending:</span>
+                       <span className="px-3 py-1 bg-orange-100 rounded-lg text-xs font-black text-orange-600">
+                         {userTopUps.filter(t => t.status === 'Pending').length}
+                       </span>
+                    </div>
+                 </div>
              </div>
 
              <div className="space-y-4">
@@ -924,7 +1483,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           {topup.status === 'Pending' && (
                              <>
                                 <button 
-                                   onClick={() => handleRejectTopUp(topup.id)}
+                                   onClick={() => handleDeleteTopUp(topup.id!)}
                                    className="p-4 text-red-500 hover:bg-red-50 rounded-2xl transition-all"
                                    title="Tolak"
                                 >
@@ -995,10 +1554,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead>
-                  <tr className="border-b text-[10px] font-black text-gray-400 uppercase tracking-[0.2em]">
-                    <th className="pb-6 pl-2">Informasi Akun</th>
-                    <th className="pb-6">Saldo Saat Ini</th>
-                    <th className="pb-6 text-right pr-2">Aksi Top Up</th>
+                  <tr className="border-b text-[9px] font-black text-gray-400 uppercase tracking-[0.1em]">
+                    <th className="pb-4 pl-2">Informasi Akun</th>
+                    <th className="pb-4">Saldo</th>
+                    <th className="pb-4 text-right pr-2">Aksi</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -1118,22 +1677,21 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   <Plus className="w-4 h-4" />
                                 </button>
                                 <button 
-                                  onClick={() => {
-                                    if(confirm(`Reset riwayat transaksi ${user.username}?`)) {
-                                      onResetUserHistory?.(user.username);
-                                    }
-                                  }}
+                                  onClick={() => handleQuickGiftVoucher(user.username, 5000)}
+                                  className="p-2 bg-indigo-100 text-indigo-600 rounded-xl hover:bg-indigo-200 transition-colors shadow-sm"
+                                  title="Hadiah Voucher 5rb (Otomatis)"
+                                >
+                                  <Tag className="w-4 h-4" />
+                                </button>
+                                <button 
+                                  onClick={() => handleDeleteUserHistory(user.username)}
                                   className="p-2 bg-orange-100 text-orange-600 rounded-xl hover:bg-orange-200 transition-colors shadow-sm"
-                                  title="Reset Riwayat Transaksi"
+                                  title="Hapus Riwayat Transaksi"
                                 >
                                   <RefreshCw className="w-4 h-4" />
                                 </button>
                                 <button 
-                                  onClick={() => {
-                                    if(confirm(`Hapus akun ${user.username}? Tindakan ini tidak dapat dibatalkan.`)) {
-                                      onDeleteUser?.(user.username);
-                                    }
-                                  }}
+                                  onClick={() => handleDeleteUser(user.username)}
                                   className="p-2 bg-gray-900 text-white rounded-xl hover:bg-black transition-colors shadow-md"
                                   title="Hapus Pengguna"
                                 >
@@ -1192,8 +1750,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
               {products.map(p => (
-                  <div key={p.id} className="bg-white p-5 rounded-3xl shadow-sm border border-gray-100 flex gap-5 group hover:border-blue-200 transition-all hover:shadow-xl">
-                    <div className="w-24 h-24 rounded-2xl overflow-hidden shrink-0">
+                  <div key={p.id} className="bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 group hover:border-blue-200 transition-all hover:shadow-xl">
+                    <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0">
                        <img src={p.image} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" alt={p.name} />
                     </div>
                     <div className="flex-1 min-w-0 flex flex-col justify-between">
@@ -1207,7 +1765,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 onDeleteProduct(p.id);
                               }
                             }} 
-                            className="text-gray-300 hover:text-red-500 transition-colors p-1"
+                            className="text-red-300 hover:text-red-600 transition-colors p-1"
+                            title="Hapus Produk"
                           >
                             <Trash2 className="w-5 h-5" />
                           </button>
@@ -1221,6 +1780,144 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {activeTab === 'vouchers' && (
+            <div className="space-y-8 animate-in slide-in-from-bottom-5 duration-500">
+               <div className="bg-white p-10 rounded-[2.5rem] border border-gray-100 shadow-sm">
+                  <h3 className="text-2xl font-black text-gray-900 mb-8 flex items-center gap-4">
+                     <div className="p-3 bg-indigo-600 text-white rounded-2xl">
+                        <Tag className="w-6 h-6" />
+                     </div>
+                     Buat Voucher Baru
+                  </h3>
+                  
+                  <form onSubmit={handleCreateVoucher} className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                     <div className="space-y-2">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Kode Voucher</label>
+                        <div className="flex gap-2">
+                           <input 
+                              type="text"
+                              placeholder="KOSONGKAN UNTUK OTOMATIS"
+                              value={newVoucher.code}
+                              onChange={e => setNewVoucher({...newVoucher, code: e.target.value})}
+                              className="flex-1 bg-gray-50 border-none rounded-xl py-3 px-4 focus:ring-2 focus:ring-indigo-500 font-black uppercase text-sm"
+                           />
+                           <button 
+                              type="button"
+                              onClick={() => setNewVoucher({...newVoucher, code: generateRandomCode()})}
+                              className="p-3 bg-gray-100 text-gray-600 rounded-xl hover:bg-gray-200"
+                              title="Generate Random Code"
+                           >
+                              <RefreshCw className="w-4 h-4" />
+                           </button>
+                        </div>
+                     </div>
+                     <div className="space-y-2">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Nominal Potongan</label>
+                        <input 
+                           type="number"
+                           placeholder="500, 1000, dst"
+                           value={newVoucher.amount}
+                           onChange={e => setNewVoucher({...newVoucher, amount: e.target.value})}
+                           className="w-full bg-gray-50 border-none rounded-xl py-3 px-4 focus:ring-2 focus:ring-indigo-500 font-black text-sm"
+                        />
+                     </div>
+                     <div className="space-y-2">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Minimal Belanja</label>
+                        <input 
+                           type="number"
+                           placeholder="0 jika tidak ada"
+                           value={newVoucher.minPurchase}
+                           onChange={e => setNewVoucher({...newVoucher, minPurchase: e.target.value})}
+                           className="w-full bg-gray-50 border-none rounded-xl py-3 px-4 focus:ring-2 focus:ring-indigo-500 font-black text-sm"
+                        />
+                     </div>
+                     <div className="space-y-2">
+                         <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Username Penerima (Opsional)</label>
+                         <input 
+                            type="text"
+                            placeholder="Username atau Kosongkan"
+                            value={newVoucher.recipient}
+                            onChange={e => setNewVoucher({...newVoucher, recipient: e.target.value})}
+                            className="w-full bg-gray-50 border-none rounded-xl py-3 px-4 focus:ring-2 focus:ring-indigo-500 font-black text-sm"
+                         />
+                         <p className="text-[8px] text-gray-400 font-bold uppercase">Jika kosong, semua orang bisa pakai</p>
+                      </div>
+                     <div className="space-y-2">
+                         <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Tenggang Waktu (Opsional)</label>
+                         <input 
+                            type="datetime-local"
+                            value={newVoucher.expiryDate}
+                            onChange={e => setNewVoucher({...newVoucher, expiryDate: e.target.value})}
+                            className="w-full bg-gray-50 border-none rounded-xl py-3 px-4 focus:ring-2 focus:ring-indigo-500 font-black text-sm"
+                         />
+                         <p className="text-[8px] text-gray-400 font-bold uppercase">Default: 2 Hari dari sekarang jika kosong</p>
+                      </div>
+                      <div className="md:col-span-3">
+                        <button 
+                           type="submit"
+                           className="w-full py-4 bg-indigo-600 text-white rounded-xl font-black uppercase tracking-widest text-[10px] shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95 flex items-center justify-center gap-2"
+                        >
+                           <Plus className="w-4 h-4" /> Simpan Voucher
+                        </button>
+                     </div>
+                  </form>
+               </div>
+
+               <div className="bg-white p-10 rounded-[2.5rem] border border-gray-100 shadow-sm">
+                  <h3 className="font-black text-gray-900 uppercase tracking-widest text-xs mb-6">Daftar Voucher Aktif</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                     {vouchers.length === 0 ? (
+                        <div className="md:col-span-3 text-center py-10 text-gray-400 font-bold uppercase text-[10px] tracking-widest">Belum ada voucher</div>
+                     ) : (
+                        vouchers.map(v => (
+                           <div key={v.id} className="p-6 bg-gray-50 rounded-3xl border border-gray-100 relative group overflow-hidden">
+                              <div className="absolute top-0 right-0 w-16 h-16 bg-indigo-600/5 -mr-8 -mt-8 rounded-full"></div>
+                              <div className="flex justify-between items-start mb-2 relative z-10">
+                                 <div>
+                                    <h4 className={`text-lg font-black tracking-tighter ${v.isUsed || !v.isActive ? 'text-gray-400 line-through' : 'text-indigo-600'}`}>{v.code}</h4>
+                                    <p className="text-[9px] font-black text-gray-400 uppercase">Potongan: {formatIDR(v.amount)}</p>
+                                 </div>
+                                 <button 
+                                    onClick={() => handleDeleteVoucher(v.id || v.code)}
+                                    className="p-2 text-gray-300 hover:text-red-500 transition-colors bg-white rounded-xl shadow-sm"
+                                 >
+                                    <Trash2 className="w-4 h-4" />
+                                 </button>
+                              </div>
+                              <div className="space-y-1 relative z-10">
+                                 <div className="flex items-center gap-2">
+                                    {v.isUsed ? (
+                                       <span className="text-[8px] font-black px-2 py-0.5 bg-red-100 text-red-600 rounded uppercase">Sudah Digunakan</span>
+                                    ) : v.isActive ? (
+                                       <span className="text-[8px] font-black px-2 py-0.5 bg-green-100 text-green-600 rounded uppercase">Aktif</span>
+                                    ) : (
+                                       <span className="text-[8px] font-black px-2 py-0.5 bg-gray-200 text-gray-500 rounded uppercase">Non-aktif</span>
+                                    )}
+                                    {v.minPurchase && v.minPurchase > 0 && (
+                                       <span className="text-[8px] font-black px-2 py-0.5 bg-blue-100 text-blue-600 rounded uppercase">Min: {formatIDR(v.minPurchase)}</span>
+                                    )}
+                                 </div>
+                                 {v.expiryDate && (
+                                    <p className="text-[8px] font-bold text-red-400 uppercase flex items-center gap-1">
+                                       <Clock className="w-2 h-2" />
+                                       Exp: {new Date(v.expiryDate).toLocaleString('id-ID')}
+                                    </p>
+                                 )}
+                                 {v.recipient && (
+                                    <p className="text-[8px] font-bold text-indigo-400 uppercase flex items-center gap-1">
+                                       <User className="w-2 h-2" />
+                                       Untuk: {v.recipient}
+                                    </p>
+                                 )}
+                              </div>
+                           </div>
+                        ))
+                     )}
+                  </div>
+               </div>
             </div>
           )}
         </main>
@@ -1498,7 +2195,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                    <div className="space-y-2 mb-4">
                                       {order.items.map((item, idx) => (
                                          <div key={idx} className="flex justify-between text-xs font-bold">
-                                            <span className="text-gray-700">{item.name} <span className="text-gray-400">x{item.quantity}</span></span>
+                                            <span className="text-gray-700 truncate max-w-[40px]">{item.name} <span className="text-gray-400">x{item.quantity}</span></span>
                                             <span className="text-gray-900">{formatIDR(item.price * item.quantity)}</span>
                                          </div>
                                       ))}

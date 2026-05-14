@@ -4,7 +4,7 @@ const ASSETS_TO_CACHE = [
   './',
   './index.html',
   './manifest.json',
-  'https://cdn-icons-png.flaticon.com/512/3081/3081559.png'
+  "https://i.imgur.com/oR61kTA.png"
 ];
 
 self.addEventListener('install', (event) => {

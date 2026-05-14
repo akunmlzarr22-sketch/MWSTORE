@@ -1,18 +1,19 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { ShoppingBag, Search, ChevronRight, LayoutGrid, LayoutDashboard, Trash2, Plus, Minus, CreditCard, AlertCircle, ShoppingCart, Settings, LogOut, Wallet, QrCode, Building2, CheckCircle2, Copy, MessageCircle, Mail, RefreshCw, Download, Info, Share2, ExternalLink, X, Smartphone, Globe, Gamepad2, Receipt, ShieldCheck, Banknote, Sparkles, Check, Scan, Save, MonitorSmartphone, Clock, Coins, ArrowUpCircle, User, Menu } from 'lucide-react';
+import { ShoppingBag, Search, ChevronRight, LayoutGrid, LayoutDashboard, Trash2, Plus, Minus, CreditCard, AlertCircle, ShoppingCart, Settings, LogOut, Wallet, QrCode, Building2, CheckCircle2, Copy, MessageCircle, Mail, RefreshCw, Download, Info, Share2, ExternalLink, X, Smartphone, Globe, Gamepad2, Receipt, ShieldCheck, Banknote, Sparkles, Check, Scan, Save, MonitorSmartphone, Clock, Coins, ArrowUpCircle, User, Menu, Users, Tag } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Product, CartItem, Order, View, AuthState, UserRole, UserAccount } from '@/types';
-import { MOCK_PRODUCTS, formatIDR } from '@/constants';
+import { formatIDR } from '@/constants';
 import ProductCard from '@/components/ProductCard';
-import AiAssistant from '@/components/AiAssistant';
 import AdminDashboard from '@/components/AdminDashboard';
 import Login from '@/components/Login';
 import UserProfile from '@/components/UserProfile';
 import CustomerService from '@/components/CustomerService';
+import CommunityChat from '@/components/CommunityChat';
 import { APP_CONFIG } from '@/config';
 import { ApiService } from '@/services/apiService';
-import { Message } from '@/types';
+import { Product, CartItem, Order, View, AuthState, UserRole, UserAccount, Message, Voucher, PaymentSettings, PaymentGatewayConfig } from '@/types';
+// import { auth as firebaseAuth } from '@/lib/firebase';
+// import { onAuthStateChanged } from 'firebase/auth';
 
 const APP_VERSION = "v3.5.0";
 
@@ -28,28 +29,108 @@ const App: React.FC = () => {
   });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isFirebaseReady, setIsFirebaseReady] = useState(false);
 
   // Authenticated listener - Updated for Local Storage (keeping for session persistent login)
   useEffect(() => {
     const savedAuth = localStorage.getItem('mwstore_auth');
     if (savedAuth) {
-      setAuth(JSON.parse(savedAuth));
+      try {
+        setAuth(JSON.parse(savedAuth));
+      } catch (e) {
+        localStorage.removeItem('mwstore_auth');
+      }
     }
-    setIsLoading(false);
+    
+    // Establish session correctly by waiting for Firebase to tell us who the user is
+    const initializeAuth = async () => {
+      try {
+        console.log("App: Initializing system...");
+        
+        // 0. Base Initialization (Health Check & Initial Fetch)
+        await ApiService.initialize();
+        
+        // 1. Wait for Firebase to check if user was already logged in
+        let currentUser = await ApiService.waitForAuthInit();
+        console.log("App: Auth init finished. User UID:", currentUser?.uid);
+        
+        // 2. If no user found (Guest), attempt anonymous sign in
+        if (!currentUser) {
+          console.log("App: No session found, establishing anonymous guest session...");
+          currentUser = await ApiService.ensureAuth();
+          if (currentUser) {
+            console.log("App: Guest session ready. UID:", currentUser.uid);
+          } else {
+            console.log("App: Note - Anonymous session could not be established. This is normal if Anonymous sign-in is disabled in your Firebase Console. Public data is still accessible.");
+          }
+        }
+
+        // 3. Check local storage for legacy/saved admin session
+        const savedAuthStr = localStorage.getItem('mwstore_auth');
+        if (savedAuthStr) {
+          try {
+            const sAuth = JSON.parse(savedAuthStr);
+            
+            // Ensure admin promotion if saved as admin
+            if (sAuth.role === 'admin') {
+               if (currentUser) {
+                 console.log("App: Admin role detected in storage, promoting UID:", currentUser.uid);
+                 const success = await ApiService.promoteToAdmin(currentUser.uid, currentUser.email || 'admin@session.local');
+                 console.log("App: Promotion success:", success);
+               } else {
+                 console.warn("App: Admin role in storage but NO FIREBASE USER to promote.");
+               }
+            }
+            
+            // Only sync state after potential promotion is initiated
+            setAuth(sAuth);
+          } catch (e) {
+            console.error("Error restoring session:", e);
+          }
+        }
+
+        // 4. Mark system ready
+        setIsFirebaseReady(true);
+        setIsLoading(false);
+        console.log("App: System ready.");
+        
+        // 6. Ensure default payment settings if none exist
+        const currentPayment = await ApiService.getPaymentSettings();
+        if (!currentPayment) {
+          console.log("App: No payment settings found, initializing defaults...");
+          await ApiService.savePaymentSettings({
+            gateways: [
+              { provider: 'Pak Kasir', apiKey: '', isActive: false, mode: 'Production', slug: '' },
+              { provider: 'Manual', apiKey: '', isActive: true, mode: 'Production', slug: '' }
+            ],
+            updatedAt: new Date().toISOString(),
+            updatedBy: 'system'
+          });
+        }
+      } catch (err) {
+        console.error("App: Fatal initialization error:", err);
+      } finally {
+        setIsFirebaseReady(true);
+        setIsLoading(false);
+        console.log("App: System ready.");
+      }
+    };
+
+    initializeAuth();
+
+    return () => {};
   }, []);
 
   // Use Reactive Listeners for Products, Users, and Orders
   useEffect(() => {
+    if (!isFirebaseReady) return;
+
     const unsubProducts = ApiService.listenToProducts((fetchedProducts) => {
-      if (fetchedProducts.length === 0) {
-        setProducts([]);
-      } else {
-        setProducts(fetchedProducts);
-      }
+      setProducts(fetchedProducts);
     });
 
-    const unsubUsers = ApiService.listenToUsers((fetchedUsers) => {
-      if (fetchedUsers.length === 0) {
+    const unsubUsers = ApiService.listenToUsers(auth.role === 'admin' && isFirebaseReady, (fetchedUsers) => {
+      if (fetchedUsers.length === 0 && auth.role === 'admin') {
         const initialAdmin: UserAccount = {
           username: 'admin',
           password: 'adminpassword',
@@ -64,7 +145,7 @@ const App: React.FC = () => {
     });
 
     let unsubOrders = () => {};
-    if (auth.isLoggedIn && auth.username) {
+    if (auth.isLoggedIn && auth.username && isFirebaseReady) {
       unsubOrders = ApiService.listenToOrders(auth.username, auth.role === 'admin', (fetchedOrders) => {
         setOrders(fetchedOrders);
       });
@@ -75,10 +156,28 @@ const App: React.FC = () => {
       unsubUsers();
       unsubOrders();
     };
-  }, [auth.isLoggedIn, auth.role, auth.username]);
+  }, [auth.isLoggedIn, auth.role, auth.username, isFirebaseReady]);
+
+  // Listen to current user specifically for balance updates
+  useEffect(() => {
+    if (!isFirebaseReady || !auth.isLoggedIn || !auth.username) {
+      return;
+    }
+
+    const unsub = ApiService.listenToUser(auth.username, (userData) => {
+      if (userData && userData.balance !== auth.balance) {
+        const newAuth = { ...auth, balance: userData.balance };
+        setAuth(newAuth);
+        localStorage.setItem('mwstore_auth', JSON.stringify(newAuth));
+      }
+    });
+
+    return () => unsub();
+  }, [auth.username, auth.isLoggedIn, auth.balance, isFirebaseReady]);
 
   // Listen for maintenance mode
   useEffect(() => {
+    if (!isFirebaseReady) return;
     const unsubscribe = ApiService.listenToSettings((settings) => {
       if (settings && settings.maintenanceMode) {
         setIsMaintenance(true);
@@ -87,7 +186,7 @@ const App: React.FC = () => {
       }
     });
     return () => unsubscribe();
-  }, []);
+  }, [isFirebaseReady]);
 
   const handleAddOrUpdateProduct = async (product: Product) => {
     const productToSave = { ...product, rating: product.rating || 5.0 };
@@ -117,19 +216,40 @@ const App: React.FC = () => {
   };
 
   const handleDeleteProduct = async (id: string) => {
-    await ApiService.deleteProduct(id);
+    try {
+      await ApiService.deleteProduct(id);
+    } catch (error) {
+      console.error("Failed to delete product:", error);
+      alert("Gagal menghapus produk. Silakan coba lagi.");
+    }
   };
 
   const [view, setView] = useState<View>('home');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('Semua');
-  const [paymentMethod, setPaymentMethod] = useState<'Saldo Akun' | 'QRIS / E-Wallet'>('Saldo Akun');
+  const [paymentMethod, setPaymentMethod] = useState<string>('Saldo Akun');
+  const [topupPaymentMethod, setTopupPaymentMethod] = useState<string>('Manual WhatsApp');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [topupAmount, setTopupAmount] = useState<number>(50000);
+  const [topupAmount, setTopupAmount] = useState<number>(0);
+  const [vouchers, setVouchers] = useState<Voucher[]>([]);
+  const [voucherCode, setVoucherCode] = useState('');
+  const [appliedVoucher, setAppliedVoucher] = useState<Voucher | null>(null);
   const [isMaintenance, setIsMaintenance] = useState(false);
   const [currentDateTime, setCurrentDateTime] = useState(new Date());
   const [unreadMessages, setUnreadMessages] = useState<number>(0);
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings | null>({
+    id: 'payment',
+    gateways: [
+      { provider: 'Pak Kasir', apiKey: '', isActive: false, mode: 'Production', slug: '' },
+      { provider: 'Manual', apiKey: '', isActive: true, mode: 'Production', slug: '' }
+    ],
+    updatedAt: new Date().toISOString(),
+    updatedBy: 'system'
+  });
+  
+  const lastProcessedMsgId = React.useRef<string | null>(null);
+  const isInitialLoad = React.useRef(true);
 
   // Update time every second
   useEffect(() => {
@@ -139,28 +259,65 @@ const App: React.FC = () => {
     return () => clearInterval(timer);
   }, []);
 
-  // Sync unread messages
+  // Load global settings
+  useEffect(() => {
+    const unsubscribePayment = ApiService.listenToPaymentSettings(settings => {
+      if (settings) setPaymentSettings(settings);
+    });
+    
+    const unsubscribeSystem = ApiService.listenToSettings((settings) => {
+      if (settings) setIsMaintenance(settings.maintenanceMode);
+    });
+    
+    return () => {
+      unsubscribePayment();
+      unsubscribeSystem();
+    };
+  }, []);
+
+  // Periodic Server Sync (Background pull from server)
+  useEffect(() => {
+    if (!auth.isLoggedIn) return;
+    
+    // Check for updates every 10 seconds
+    const syncInterval = setInterval(() => {
+      ApiService.syncFromServer();
+    }, 10000);
+    
+    return () => clearInterval(syncInterval);
+  }, [auth.isLoggedIn]);
+
+  // Sync unread messages and notifications
   useEffect(() => {
     if (auth.isLoggedIn && auth.username) {
-      const unsubscribe = ApiService.listenToMessages(auth.username, auth.role === 'admin', (msgs) => {
-        const unreadCount = msgs.filter(m => m.recipient === auth.username && !m.read).length;
+      const normalizedUsername = auth.username.toLowerCase().trim();
+      const unsubscribeMessages = ApiService.listenToMessages(normalizedUsername, auth.role === 'admin', (msgs) => {
+        // Handle unread count
+        const unreadCount = msgs.filter(m => 
+          (m.recipient?.toLowerCase() === normalizedUsername || (auth.role === 'admin' && m.recipient === 'admin')) && 
+          !m.read && 
+          m.sender !== auth.username
+        ).length;
         setUnreadMessages(unreadCount);
-      });
-      return () => unsubscribe();
+
+        // Handle notification flags
+        const newestMsg = msgs[0];
+        if (newestMsg && newestMsg.id !== lastProcessedMsgId.current) {
+          lastProcessedMsgId.current = newestMsg.id;
+        }
+        isInitialLoad.current = false;
+      }, 'all');
+      
+      const unsubscribeVouchers = ApiService.listenToVouchers(normalizedUsername, auth.role === 'admin' && isFirebaseReady, setVouchers);
+      return () => {
+        unsubscribeMessages();
+        unsubscribeVouchers();
+      };
+    } else {
+      isInitialLoad.current = true;
+      lastProcessedMsgId.current = null;
     }
   }, [auth.isLoggedIn, auth.username, auth.role]);
-
-  // Update Auth State Balance when users change
-  useEffect(() => {
-    if (auth.username && auth.isLoggedIn) {
-      const currentUser = users.find(u => u.username === auth.username);
-      if (currentUser && currentUser.balance !== auth.balance) {
-        const newAuth = { ...auth, balance: currentUser.balance };
-        setAuth(newAuth);
-        localStorage.setItem('mwstore_auth', JSON.stringify(newAuth));
-      }
-    }
-  }, [users, auth.username, auth.isLoggedIn, auth.balance]);
 
   const categories = ['Semua', ...new Set(products.map(p => p.category))];
 
@@ -172,40 +329,68 @@ const App: React.FC = () => {
     });
   }, [searchQuery, selectedCategory, products]);
 
-  const handleLogin = (role: UserRole, username: string) => {
-    const user = users.find(u => u.username === username);
+  const handleLogin = async (role: UserRole, username: string) => {
+    const normalizedUsername = username.toLowerCase().trim();
+    let user = users.find(u => u.username.toLowerCase() === normalizedUsername);
+    
+    // If not in the local list (common for non-admins), fetch directly
+    if (!user) {
+      user = await ApiService.getUser(normalizedUsername) || undefined;
+    }
+    
+    if (!user && role !== 'admin') {
+      alert("Akun tidak ditemukan!");
+      return;
+    }
+
+    // Promotion for legacy login
+    if (role === 'admin') {
+      const currentUser = await ApiService.ensureAuth(true); // Force auth for admin
+      if (currentUser) {
+        console.log("App: Admin session established. UID:", currentUser.uid);
+        await ApiService.promoteToAdmin(currentUser.uid, user?.email || 'admin@session.local');
+      } else {
+        console.error("App: FAILED to establish Firebase session for admin. Permission errors will occur.");
+        alert("Gagal menyambungkan ke server aman. Beberapa fitur admin mungkin tidak berfungsi.");
+      }
+    }
+
     const newAuth: AuthState = { 
       isLoggedIn: true, 
       role, 
-      username, 
-      balance: user?.balance || 0 
+      username: normalizedUsername, 
+      balance: user?.balance || (role === 'admin' ? 999999999 : 0) 
     };
     setAuth(newAuth);
     localStorage.setItem('mwstore_auth', JSON.stringify(newAuth));
   };
 
   const handleRegister = (account: UserAccount): boolean => {
-    const exists = users.find(u => u.username.toLowerCase() === account.username.toLowerCase());
-    if (exists) return false;
+    // Note: Availability check is now handled in the Login component before calling onRegister
     
-    ApiService.saveUser(account, account.username);
+    const accountWithDate = {
+      ...account,
+      createdAt: new Date().toISOString()
+    };
+    ApiService.saveUser(accountWithDate, account.username);
     return true;
   };
 
   const handleLogout = async () => {
+    await ApiService.logout();
     setAuth({ isLoggedIn: false, role: null, username: null, balance: null });
     localStorage.removeItem('mwstore_auth');
     setView('home');
     setCart([]);
   };
 
-  const addToCart = (product: Product, redirect: boolean = false) => {
+  const addToCart = (product: Product, redirect: boolean = false, quantity: number = 1) => {
     setCart(prev => {
       const existing = prev.find(item => item.id === product.id);
       if (existing) {
-        return prev.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
+        return prev.map(item => item.id === product.id ? { ...item, quantity: item.quantity + quantity } : item);
       }
-      return [...prev, { ...product, quantity: 1 }];
+      return [...prev, { ...product, quantity }];
     });
     if (redirect) setView('cart');
   };
@@ -215,12 +400,36 @@ const App: React.FC = () => {
   };
 
   const cartTotal = cart.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+  const discountAmount = appliedVoucher ? appliedVoucher.amount : 0;
+  const finalTotal = Math.max(0, cartTotal - discountAmount);
   const cartCount = cart.reduce((acc, item) => acc + item.quantity, 0);
+
+  const handleApplyVoucher = async () => {
+    if (!voucherCode) return;
+    const v = await ApiService.validateVoucher(voucherCode.toUpperCase(), auth.username || undefined);
+    if (!v) {
+      alert("Kode voucher tidak valid, sudah digunakan, kedaluwarsa, atau bukan milik Anda.");
+      return;
+    }
+    if (v.minPurchase && cartTotal < v.minPurchase) {
+      alert(`Voucher ini minimal pembelian ${formatIDR(v.minPurchase)}`);
+      return;
+    }
+    
+    setAppliedVoucher(v);
+    alert(`Voucher ${v.code} berhasil dipasang! Potongan ${formatIDR(v.amount)}`);
+  };
 
   const handleProcessPayment = () => {
     if (cart.length === 0) return;
+
+    if (!auth.isLoggedIn) {
+      alert("Silakan login terlebih dahulu untuk melakukan pembelian.");
+      setView('login');
+      return;
+    }
     
-    if (paymentMethod === 'Saldo Akun' && (auth.balance || 0) < cartTotal) {
+    if (paymentMethod === 'Saldo Akun' && (auth.balance || 0) < finalTotal) {
       alert("Saldo Anda tidak cukup! Silakan top up.");
       setView('topup');
       return;
@@ -247,55 +456,115 @@ const App: React.FC = () => {
     });
 
     setTimeout(async () => {
-      // Update Produk (Kurangi Stok)
-      const newProducts = products.map(p => {
-        const cartItem = cart.find(ci => ci.id === p.id);
-        if (cartItem) {
-          if (p.productType === 'Unik') {
-            const remainingInventory = (p.inventory || []).slice(cartItem.quantity);
-            return { ...p, inventory: remainingInventory, stock: remainingInventory.length };
-          } else {
-            const newStock = Math.max(0, p.stock - cartItem.quantity);
-            return { ...p, stock: newStock };
+      try {
+        // Update Produk (Kurangi Stok)
+        const newProducts = products.map(p => {
+          const cartItem = cart.find(ci => ci.id === p.id);
+          if (cartItem) {
+            if (p.productType === 'Unik') {
+              const remainingInventory = (p.inventory || []).slice(cartItem.quantity);
+              return { ...p, inventory: remainingInventory, stock: remainingInventory.length };
+            } else {
+              const newStock = Math.max(0, p.stock - cartItem.quantity);
+              return { ...p, stock: newStock };
+            }
+          }
+          return p;
+        });
+
+        // Save updated products to Firebase
+        const productsToUpdate = newProducts.filter(p => cart.some(ci => ci.id === p.id));
+        for (const p of productsToUpdate) {
+          await ApiService.updateProductStock(p.id, p.stock, p.inventory);
+        }
+        setProducts(newProducts);
+
+        const orderId = Math.floor(100000 + Math.random() * 900000).toString();
+        const newOrder: Order = {
+          id: orderId,
+          items: processedCart,
+          totalAmount: finalTotal,
+          date: new Date().toLocaleString('id-ID'),
+          status: paymentMethod === 'Saldo Akun' ? 'Selesai' : 'Pending',
+          paymentMethod: paymentMethod,
+          username: auth.username || 'Guest'
+        };
+
+        await ApiService.createOrder(newOrder, auth.username || 'guest');
+        setOrders(prev => [newOrder, ...prev]);
+
+        // If voucher was used, redeem it
+        if (appliedVoucher) {
+          await ApiService.redeemVoucher(appliedVoucher.code);
+        }
+
+        // If paid by WhatsApp, redirect to WhatsApp
+        if (paymentMethod === 'Manual WhatsApp') {
+          const waNumber = APP_CONFIG.admin.whatsapp;
+          const message = `Halo Admin, saya ingin konfirmasi pesanan.\n\n` +
+                          `ID Pesanan: ${orderId}\n` +
+                          `Username: ${auth.username}\n` +
+                          `Total: ${formatIDR(finalTotal)}\n\n` +
+                          `Mohon segera diproses ya, terima kasih!`;
+          
+          const waUrl = `https://wa.me/${waNumber}?text=${encodeURIComponent(message)}`;
+          window.open(waUrl, '_blank');
+        } else if (paymentMethod !== 'Saldo Akun') {
+          // Handling for Automated Gateways (Pak Kasir, Tripay, etc.)
+          const gateway = paymentSettings?.gateways.find(g => g.provider === paymentMethod);
+          if (gateway && gateway.provider === 'Pak Kasir' && gateway.slug) {
+            console.log(`Processing with Pak Kasir [${gateway.slug}]...`);
+            // Constructed URL for Pak Kasir (Common pattern)
+            const amount = finalTotal;
+            const checkoutUrl = `https://pakkasir.id/checkout/${gateway.slug}?external_id=${orderId}&amount=${amount}&callback_url=${encodeURIComponent(window.location.origin + '/?view=orders')}`;
+            
+            // In a real implementation with a backend, you'd create a session first via API.
+            // For this frontend-only request, we redirect to the presumed checkout link.
+            setTimeout(() => {
+              window.open(checkoutUrl, '_blank');
+            }, 1000);
+            
+            alert(`Pesanan ${orderId} berhasil dibuat. Anda akan diarahkan ke halaman pembayaran Pak Kasir.`);
+          } else if (gateway) {
+            console.log(`Processing with ${gateway.provider} automated gateway...`);
+            alert(`Pesanan ${orderId} berhasil dibuat menggunakan ${gateway.provider}. Silakan cek status pesanan Anda secara berkala.`);
           }
         }
-        return p;
-      });
 
-      // Save updated products to Firebase
-      const productsToUpdate = newProducts.filter(p => cart.some(ci => ci.id === p.id));
-      for (const p of productsToUpdate) {
-        await ApiService.saveProduct(p);
+        // If paid by balance, update balance
+        if (paymentMethod === 'Saldo Akun' && auth.username) {
+          const newBalance = (auth.balance || 0) - finalTotal;
+          await ApiService.updateBalanceByUsername(auth.username, newBalance);
+          const updatedAuth = { ...auth, balance: newBalance };
+          setAuth(updatedAuth);
+          localStorage.setItem('mwstore_auth', JSON.stringify(updatedAuth));
+        }
+
+        // Reward Logic: Check if user has bought 10 times with balance
+        if (paymentMethod === 'Saldo Akun' && auth.username) {
+           const reward = await ApiService.checkAndGrantReward(auth.username);
+           if (reward.rewarded) {
+              alert(`🎉 Selamat! Anda mendapatkan Reward Voucher Belanja karena telah berbelanja 10 kali menggunakan saldo. Cek pesan masuk Anda untuk mengambil kodenya!`);
+           }
+        }
+
+        setCart([]);
+        setAppliedVoucher(null);
+        setVoucherCode('');
+        setView('orders');
+      } catch (error) {
+        const err = error instanceof Error ? error.message : String(error);
+        let displayErr = "Terjadi kesalahan saat memproses pembayaran.";
+        try {
+          const parsed = JSON.parse(err);
+          displayErr = `Kesalahan: ${parsed.error || err}`;
+        } catch(e) {}
+        console.error("Payment failed:", error);
+        alert(displayErr + ". Hubungi admin via Layanan CS jika saldo Anda terpotong namun pesanan tidak muncul.");
+      } finally {
+        setIsProcessing(false);
       }
-      setProducts(newProducts);
-
-      const orderId = Math.floor(100000 + Math.random() * 900000).toString();
-      const newOrder: Order = {
-        id: orderId,
-        items: processedCart,
-        totalAmount: cartTotal,
-        date: new Date().toLocaleString('id-ID'),
-        status: paymentMethod === 'Saldo Akun' ? 'Proses' : 'Pending',
-        paymentMethod: paymentMethod,
-        username: auth.username || 'Guest'
-      };
-
-      await ApiService.createOrder(newOrder, auth.username || 'guest');
-      setOrders(prev => [newOrder, ...prev]);
-
-      // If paid by balance, update balance
-      if (paymentMethod === 'Saldo Akun' && auth.username) {
-        const newBalance = (auth.balance || 0) - cartTotal;
-        await ApiService.updateBalanceByUsername(auth.username, newBalance);
-        const updatedAuth = { ...auth, balance: newBalance };
-        setAuth(updatedAuth);
-        localStorage.setItem('mwstore_auth', JSON.stringify(updatedAuth));
-      }
-
-      setCart([]);
-      setIsProcessing(false);
-      setView('orders');
-    }, 1500);
+    }, 100);
   };
 
   const handleProcessTopup = () => {
@@ -304,7 +573,7 @@ const App: React.FC = () => {
     
     setTimeout(async () => {
       if (auth.username) {
-        const topupId = Math.random().toString(36).substring(7).toUpperCase();
+        const topupId = Math.floor(100000 + Math.random() * 900000).toString();
         
         // Catat Transaksi Top Up sebagai PENDING
         const newTopUp: TopUpTransaction = {
@@ -319,18 +588,34 @@ const App: React.FC = () => {
 
         setIsProcessing(false);
         
-        // Redirect ke WhatsApp Admin
-        const waNumber = APP_CONFIG.admin.whatsapp;
-        const message = `Halo Admin, saya ingin konfirmasi Top Up Saldo.\n\n` +
-                        `ID Tiket: ${topupId}\n` +
-                        `Username: ${auth.username}\n` +
-                        `Nominal: ${formatIDR(topupAmount)}\n\n` +
-                        `Mohon segera diproses ya, terima kasih!`;
-        
-        const waUrl = `https://wa.me/${waNumber}?text=${encodeURIComponent(message)}`;
-        
-        alert(`Permintaan Top Up ID ${topupId} telah dibuat. Anda akan diarahkan ke WhatsApp Admin untuk konfirmasi pembayaran.`);
-        window.open(waUrl, '_blank');
+        if (topupPaymentMethod === 'Manual WhatsApp') {
+          // Redirect ke WhatsApp Admin
+          const waNumber = APP_CONFIG.admin.whatsapp;
+          const message = `Halo Admin, saya ingin konfirmasi Top Up Saldo.\n\n` +
+                          `ID Tiket: ${topupId}\n` +
+                          `Username: ${auth.username}\n` +
+                          `Nominal: ${formatIDR(topupAmount)}\n\n` +
+                          `Mohon segera diproses ya, terima kasih!`;
+          
+          const waUrl = `https://wa.me/${waNumber}?text=${encodeURIComponent(message)}`;
+          
+          alert(`Permintaan Top Up ID ${topupId} telah dibuat. Anda akan diarahkan ke WhatsApp Admin untuk konfirmasi pembayaran.`);
+          window.open(waUrl, '_blank');
+        } else {
+          // Automated Gateway
+          const gateway = paymentSettings?.gateways.find(g => g.provider === topupPaymentMethod);
+          if (gateway && gateway.provider === 'Pak Kasir' && gateway.slug) {
+            const checkoutUrl = `https://pakkasir.id/checkout/${gateway.slug}?external_id=${topupId}&amount=${topupAmount}&callback_url=${encodeURIComponent(window.location.origin + '/?view=profile')}`;
+            
+            setTimeout(() => {
+              window.open(checkoutUrl, '_blank');
+            }, 500);
+            
+            alert(`Permintaan Top Up ID ${topupId} berhasil dibuat. Anda akan diarahkan ke halaman pembayaran ${gateway.provider}.`);
+          } else if (gateway) {
+            alert(`Permintaan Top Up ID ${topupId} berhasil dibuat menggunakan ${gateway.provider}. Silakan cek status saldo Anda secara berkala.`);
+          }
+        }
         
         setView('profile'); // Arahkan ke profil untuk lihat riwayat
       }
@@ -414,6 +699,7 @@ const App: React.FC = () => {
           onDeleteUser={handleDeleteUser}
           onResetUserHistory={handleResetUserHistory}
           onUpdateOrder={handleUpdateOrder}
+          onLogout={handleLogout}
         />
       </motion.div>
     );
@@ -441,14 +727,24 @@ const App: React.FC = () => {
               <Menu className="w-6 h-6" />
             </button>
             <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('home')}>
-              <div className="w-9 h-9 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg">
-                <ShoppingBag className="w-5 h-5" />
-              </div>
+              <img src="https://i.imgur.com/oR61kTA.png" className="w-9 h-9 object-contain" alt="MWSTORE Logo" />
               <span className="text-lg font-black text-gray-900 tracking-tighter">MWSTORE</span>
             </div>
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Customer Service Hub Shortcut */}
+            <button 
+              onClick={() => setView('customer-service')}
+              className="relative p-2 text-gray-700 hover:text-indigo-600 transition-colors"
+              title="Layanan CS"
+            >
+              <MessageCircle className="w-6 h-6" />
+              {unreadMessages > 0 && (
+                <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white animate-pulse"></span>
+              )}
+            </button>
+
             {/* Balance Badge - Clickable to Top Up */}
             <button 
               onClick={() => setView('topup')}
@@ -496,9 +792,7 @@ const App: React.FC = () => {
             >
               <div className="p-8 border-b flex justify-between items-center">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg">
-                    <ShoppingBag className="w-6 h-6" />
-                  </div>
+                  <img src="https://i.imgur.com/oR61kTA.png" className="w-10 h-10 object-contain" alt="MWSTORE Logo" />
                   <span className="text-xl font-black text-gray-900 tracking-tighter">MWSTORE</span>
                 </div>
                 <button onClick={() => setIsSidebarOpen(false)} className="p-2 hover:bg-gray-100 rounded-xl transition-colors">
@@ -532,6 +826,14 @@ const App: React.FC = () => {
                 </button>
 
                 <button 
+                  onClick={() => { setView('vouchers'); setIsSidebarOpen(false); }}
+                  className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'vouchers' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'text-gray-400 hover:bg-gray-50'}`}
+                >
+                  <Tag className="w-5 h-5" />
+                  <span>Voucher & Promo</span>
+                </button>
+
+                <button 
                   onClick={() => { setView('customer-service'); setIsSidebarOpen(false); }}
                   className={`w-full flex items-center justify-between px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'customer-service' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'text-gray-400 hover:bg-gray-50'}`}
                 >
@@ -540,10 +842,18 @@ const App: React.FC = () => {
                     <span>Layanan CS</span>
                   </div>
                   {unreadMessages > 0 && (
-                    <span className="w-5 h-5 bg-red-500 text-white text-[8px] flex items-center justify-center rounded-full leading-none">
-                      {unreadMessages}
-                    </span>
+                    <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse border-2 border-white shadow-sm"></span>
                   )}
+                </button>
+
+                <button 
+                  onClick={() => { setView('community-chat'); setIsSidebarOpen(false); }}
+                  className={`w-full flex items-center justify-between px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'community-chat' ? 'bg-orange-600 text-white shadow-lg shadow-orange-100' : 'text-gray-400 hover:bg-gray-50'}`}
+                >
+                  <div className="flex items-center gap-4">
+                    <Users className="w-5 h-5" />
+                    <span>Obrolan Komunitas</span>
+                  </div>
                 </button>
 
                 {auth.role === 'admin' && (
@@ -654,7 +964,7 @@ const App: React.FC = () => {
                 ))}
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 mb-20">
+              <div className="grid grid-cols-2 gap-3 mb-20">
                 {filteredProducts.map((product, idx) => (
                   <motion.div
                     key={product.id}
@@ -695,16 +1005,61 @@ const App: React.FC = () => {
                           <span className="absolute left-6 top-1/2 -translate-y-1/2 font-black text-indigo-400 text-2xl">Rp</span>
                           <input 
                             type="number" 
-                            value={topupAmount}
+                            value={topupAmount === 0 ? '' : topupAmount}
                             onChange={(e) => setTopupAmount(Number(e.target.value))}
                             className="w-full bg-gray-50 border-2 border-transparent focus:border-indigo-500/20 rounded-[2rem] py-6 pl-16 pr-8 focus:ring-4 focus:ring-indigo-500/5 outline-none font-black text-2xl text-gray-900 transition-all"
-                            placeholder="Min. 1.000"
+                            placeholder="Pilih Nominal"
                             min="1000"
                           />
                        </div>
                        <p className="mt-4 text-[10px] font-bold text-gray-400 uppercase tracking-tighter px-2">
                          Minimal Top Up adalah Rp 1.000
                        </p>
+                    </div>
+
+                    <div className="space-y-4">
+                       <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1 block">Pilih Metode Pembayaran</label>
+                       
+                       <div className="grid grid-cols-1 gap-3">
+                          <button 
+                             onClick={() => setTopupPaymentMethod('Manual WhatsApp')}
+                             className={`p-5 rounded-3xl border-2 text-left flex items-center justify-between transition-all ${topupPaymentMethod === 'Manual WhatsApp' ? 'border-indigo-600 bg-indigo-50' : 'border-gray-100 hover:border-gray-200 bg-white'}`}
+                          >
+                             <div className="flex items-center gap-4">
+                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${topupPaymentMethod === 'Manual WhatsApp' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-400'}`}>
+                                   <MessageCircle className="w-5 h-5" />
+                                </div>
+                                <div>
+                                   <p className="text-xs font-black text-gray-900">Manual WhatsApp</p>
+                                   <p className="text-[9px] text-gray-500 font-bold uppercase tracking-widest">Konfirmasi via Chat</p>
+                                </div>
+                             </div>
+                             <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${topupPaymentMethod === 'Manual WhatsApp' ? 'border-indigo-600' : 'border-gray-200'}`}>
+                                {topupPaymentMethod === 'Manual WhatsApp' && <div className="w-2.5 h-2.5 bg-indigo-600 rounded-full" />}
+                             </div>
+                          </button>
+
+                          {paymentSettings?.gateways.filter(g => g.isActive && g.provider !== 'Manual').map(gw => (
+                             <button 
+                                key={gw.provider}
+                                onClick={() => setTopupPaymentMethod(gw.provider)}
+                                className={`p-5 rounded-3xl border-2 text-left flex items-center justify-between transition-all ${topupPaymentMethod === gw.provider ? 'border-indigo-600 bg-indigo-50' : 'border-gray-100 hover:border-gray-200 bg-white'}`}
+                             >
+                                <div className="flex items-center gap-4">
+                                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${topupPaymentMethod === gw.provider ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-400'}`}>
+                                      <QrCode className="w-5 h-5" />
+                                   </div>
+                                   <div>
+                                      <p className="text-xs font-black text-gray-900">{gw.provider} Automated</p>
+                                      <p className="text-[9px] text-gray-500 font-bold uppercase tracking-widest">QRIS / Instant Payment</p>
+                                   </div>
+                                </div>
+                                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${topupPaymentMethod === gw.provider ? 'border-indigo-600' : 'border-gray-200'}`}>
+                                   {topupPaymentMethod === gw.provider && <div className="w-2.5 h-2.5 bg-indigo-600 rounded-full" />}
+                                </div>
+                             </button>
+                          ))}
+                       </div>
                     </div>
 
                     <div className="bg-orange-50 p-6 rounded-[2.5rem] border border-orange-100 flex items-start gap-4">
@@ -714,7 +1069,9 @@ const App: React.FC = () => {
                        <div>
                           <p className="text-[10px] text-orange-700 font-black uppercase tracking-widest mb-1">Informasi Pembayaran</p>
                           <p className="text-xs text-orange-600/80 font-bold leading-relaxed">
-                             Pembayaran dilakukan secara manual dengan menghubungi WhatsApp Admin. Klik tombol di bawah untuk mendapatkan instruksi pembayaran ke nomor admin.
+                             {topupPaymentMethod === 'Manual WhatsApp' 
+                                ? 'Pembayaran dilakukan secara manual dengan menghubungi WhatsApp Admin. Klik tombol di bawah untuk mendapatkan instruksi pembayaran.'
+                                : `Pembayaran akan diproses secara otomatis melalui ${topupPaymentMethod}. Anda akan diarahkan ke halaman pembayaran instan.`}
                           </p>
                        </div>
                     </div>
@@ -732,8 +1089,8 @@ const App: React.FC = () => {
                              </>
                           ) : (
                              <>
-                                <MessageCircle className="w-6 h-6" />
-                                Hubungi Admin & Bayar
+                                {topupPaymentMethod === 'Manual WhatsApp' ? <MessageCircle className="w-6 h-6" /> : <CreditCard className="w-6 h-6" />}
+                                {topupPaymentMethod === 'Manual WhatsApp' ? 'Hubungi Admin & Bayar' : `Bayar via ${topupPaymentMethod}`}
                              </>
                           )}
                        </button>
@@ -836,13 +1193,47 @@ const App: React.FC = () => {
                               </div>
                             ))}
                             <div className="pt-4 border-t border-gray-50 flex justify-between items-end">
-                               <span className="text-[10px] font-black text-gray-900 uppercase">Total Bayar</span>
-                               <span className="text-xl font-black text-blue-600">{formatIDR(cartTotal)}</span>
+                               <span className="text-[10px] font-black text-gray-900 uppercase">Harga Produk</span>
+                               <span className="text-xl font-black text-gray-900 leading-none">{formatIDR(cartTotal)}</span>
                             </div>
+
+                            {appliedVoucher && (
+                               <div className="flex justify-between items-end text-green-600 pt-2">
+                                  <span className="text-[10px] font-black uppercase">Voucher Diskon ({appliedVoucher.code})</span>
+                                  <span className="text-sm font-black italic">-{formatIDR(appliedVoucher.amount)}</span>
+                               </div>
+                            )}
+
+                            <div className="pt-4 mt-2 border-t border-indigo-100 flex justify-between items-end">
+                               <span className="text-[10px] font-black text-indigo-600 uppercase">Total Bayar</span>
+                               <span className="text-2xl font-black text-blue-600 leading-none">{formatIDR(finalTotal)}</span>
+                            </div>
+
+                            {!appliedVoucher && (
+                               <div className="mt-8 space-y-3">
+                                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Punya Voucher Diskon?</p>
+                                  <div className="flex gap-2">
+                                     <input 
+                                        type="text"
+                                        placeholder="MASUKKAN KODE"
+                                        value={voucherCode}
+                                        onChange={e => setVoucherCode(e.target.value)}
+                                        className="flex-1 bg-gray-50 border-none rounded-xl py-3 px-4 focus:ring-2 focus:ring-indigo-500 font-black uppercase text-xs"
+                                     />
+                                     <button 
+                                        type="button"
+                                        onClick={handleApplyVoucher}
+                                        className="px-4 bg-indigo-600 text-white rounded-xl font-black uppercase text-[9px] hover:bg-indigo-700 transition-all"
+                                     >
+                                        Pasang
+                                     </button>
+                                  </div>
+                               </div>
+                            )}
                          </div>
                       </div>
 
-                      {(paymentMethod === 'Saldo Akun' && (auth.balance || 0) < cartTotal) && (
+                      {(paymentMethod === 'Saldo Akun' && (auth.balance || 0) < finalTotal) && (
                          <div className="p-6 bg-red-50 rounded-3xl border border-red-100 flex flex-col gap-4">
                             <div className="flex items-start gap-4">
                                <AlertCircle className="w-5 h-5 text-red-600 shrink-0" />
@@ -871,6 +1262,28 @@ const App: React.FC = () => {
                          </div>
                       </button>
 
+                      {/* Dynamic Payment Gateways from Admin Settings */}
+                      {paymentSettings?.gateways.filter(g => g.isActive && g.provider !== 'Manual').map(gateway => (
+                        <button 
+                          key={gateway.provider}
+                          onClick={() => setPaymentMethod(gateway.provider)} 
+                          className={`w-full p-8 rounded-[2.5rem] border-2 transition-all text-left flex items-center justify-between ${paymentMethod === gateway.provider ? 'bg-indigo-50 border-indigo-600' : 'bg-white border-gray-100 hover:border-gray-200'}`}
+                        >
+                           <div className="flex items-center gap-6">
+                              <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${paymentMethod === gateway.provider ? 'bg-indigo-600 text-white shadow-xl' : 'bg-gray-50 text-gray-400'}`}>
+                                 <CreditCard className="w-7 h-7" />
+                              </div>
+                              <div>
+                                 <h4 className="font-black text-gray-900 text-lg">{gateway.provider} Automated</h4>
+                                 <p className="text-sm text-gray-500 font-medium">Pembayaran otomatis melalui {gateway.provider}.</p>
+                              </div>
+                           </div>
+                           <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${paymentMethod === gateway.provider ? 'border-indigo-600' : 'border-gray-200'}`}>
+                              {paymentMethod === gateway.provider && <div className="w-3 h-3 bg-indigo-600 rounded-full" />}
+                           </div>
+                        </button>
+                      ))}
+
                       <button onClick={() => setPaymentMethod('Manual WhatsApp')} className={`w-full p-8 rounded-[2.5rem] border-2 transition-all text-left flex items-center justify-between ${paymentMethod === 'Manual WhatsApp' ? 'bg-blue-50 border-blue-600' : 'bg-white border-gray-100 hover:border-gray-200'}`}>
                          <div className="flex items-center gap-6">
                             <div className={`w-14 h-14 rounded-2xl flex items-center justify-center ${paymentMethod === 'Manual WhatsApp' ? 'bg-blue-600 text-white shadow-xl' : 'bg-gray-50 text-gray-400'}`}>
@@ -888,11 +1301,11 @@ const App: React.FC = () => {
 
                       <button 
                          onClick={handleProcessPayment}
-                         disabled={isProcessing || (paymentMethod === 'Saldo Akun' && (auth.balance || 0) < cartTotal)}
+                         disabled={isProcessing || (paymentMethod === 'Saldo Akun' && (auth.balance || 0) < finalTotal)}
                          className="w-full py-6 bg-green-600 text-white rounded-[2rem] font-black uppercase tracking-widest text-xs flex items-center justify-center gap-3 shadow-xl hover:bg-green-700 transition-all active:scale-95 disabled:opacity-50"
                       >
                          {isProcessing ? <RefreshCw className="w-6 h-6 animate-spin" /> : <CheckCircle2 className="w-6 h-6" />}
-                         {paymentMethod === 'Saldo Akun' ? 'Bayar Pakai Saldo Sekarang' : 'Konfirmasi Sudah Transfer'}
+                         {paymentMethod === 'Saldo Akun' ? 'Bayar Pakai Saldo Sekarang' : 'Lanjutkan Pembayaran'}
                       </button>
                    </div>
                 </div>
@@ -931,10 +1344,13 @@ const App: React.FC = () => {
                                </h4>
                                
                                {/* TAMPILKAN DATA BARANG SETELAH BAYAR */}
-                               {order.status !== 'Pending' && order.items.some(i => i.issuedData && i.issuedData.length > 0) && (
+                               {order.status === 'Selesai' && order.items.some(i => i.issuedData && i.issuedData.length > 0) && (
                                  <div className="mt-4 space-y-3 bg-blue-50/50 p-4 rounded-2xl border border-blue-100/50 max-w-md">
                                     <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest flex items-center gap-2">
-                                       <ShieldCheck className="w-3 h-3" /> Data Barang Terkirim
+                                       <ShieldCheck className="w-3 h-3" /> 
+                                       {order.items.some(i => i.issuedData?.some(d => d !== 'Produk akan segera diproses')) 
+                                         ? 'Data Barang Terkirim' 
+                                         : 'Status Pengiriman'}
                                     </p>
                                     <div className="space-y-2">
                                        {order.items.map((item, idx) => (
@@ -973,9 +1389,13 @@ const App: React.FC = () => {
                             <div className="flex flex-col items-end gap-3 w-full md:w-auto">
                                <div className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest flex items-center gap-2 ${
                                   order.status === 'Selesai' ? 'bg-green-100 text-green-600' : 
-                                  order.status === 'Pending' ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'
+                                  order.status === 'Pending' ? 'bg-orange-100 text-orange-600' : 
+                                  order.status === 'Gagal' ? 'bg-red-100 text-red-600' : 
+                                  'bg-blue-100 text-blue-600'
                                }`}>
-                                  {order.status === 'Pending' ? <Clock className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+                                  {order.status === 'Pending' ? <Clock className="w-4 h-4" /> : 
+                                   order.status === 'Gagal' ? <AlertCircle className="w-4 h-4" /> :
+                                   <CheckCircle2 className="w-4 h-4" />}
                                   {order.status}
                                </div>
                                <button className="text-[10px] font-black text-blue-600 uppercase tracking-widest hover:underline">Download Invois</button>
@@ -987,6 +1407,92 @@ const App: React.FC = () => {
             </motion.div>
           )}
 
+          {view === 'vouchers' && (
+             <div className="max-w-4xl mx-auto w-full p-6 space-y-8 animate-in slide-in-from-bottom-5 duration-500">
+                <div className="bg-white p-10 rounded-[3.5rem] border border-gray-100 shadow-sm relative overflow-hidden">
+                   <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-50/50 rounded-full -mr-32 -mt-32"></div>
+                   <div className="relative z-10">
+                      <h2 className="text-3xl font-black text-gray-900 tracking-tighter uppercase mb-2">Voucher & Promo</h2>
+                      <p className="text-gray-400 font-medium text-sm">Gunakan kode voucher di bawah ini untuk mendapatkan potongan harga spesial.</p>
+                   </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                   {vouchers.filter(v => v.isActive && (!v.recipient || (auth.username && v.recipient.toLowerCase() === auth.username.toLowerCase()))).length === 0 ? (
+                      <div className="md:col-span-2 py-20 bg-white rounded-[3rem] border border-dashed border-gray-200 flex flex-col items-center justify-center text-center gap-4">
+                         <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-gray-300">
+                            <Tag className="w-8 h-8" />
+                         </div>
+                         <p className="text-sm font-black text-gray-400 uppercase tracking-widest">Belum ada promo tersedia</p>
+                      </div>
+                   ) : (
+                      vouchers.filter(v => v.isActive && (!v.recipient || (auth.username && v.recipient.toLowerCase() === auth.username.toLowerCase()))).map(v => (
+                         <div key={v.id} className="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm relative group hover:shadow-xl hover:shadow-indigo-100/50 transition-all">
+                            <div className="flex justify-between items-start mb-6">
+                               <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                                  <Tag className="w-6 h-6" />
+                               </div>
+                               <div className="text-right">
+                                  <span className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Potongan</span>
+                                  <p className="text-2xl font-black text-gray-900 leading-none">{formatIDR(v.amount)}</p>
+                               </div>
+                            </div>
+                            
+                            <div className="space-y-4">
+                               <div>
+                                  <h4 className="text-lg font-black text-gray-900 leading-none">{v.code}</h4>
+                                  {v.minPurchase && v.minPurchase > 0 && (
+                                     <p className="text-[10px] font-bold text-gray-400 mt-2">Min. Pembelian {formatIDR(v.minPurchase)}</p>
+                                  )}
+                               </div>
+
+                               <div className="flex gap-2">
+                                  <button 
+                                     onClick={() => {
+                                        navigator.clipboard.writeText(v.code);
+                                        alert("Kode voucher berhasil disalin!");
+                                     }}
+                                     className="flex-1 py-3 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-xl font-black uppercase text-[10px] tracking-widest transition-all flex items-center justify-center gap-2"
+                                  >
+                                     <Copy className="w-3.5 h-3.5" /> Salin Kode
+                                  </button>
+                                  <button 
+                                     onClick={() => setView('home')}
+                                     className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all flex items-center justify-center gap-2"
+                                  >
+                                     Gunakan <ChevronRight className="w-3.5 h-3.5" />
+                                  </button>
+                               </div>
+                            </div>
+
+                            {/* Ticket Notch effect */}
+                            <div className="absolute top-1/2 -left-3 w-6 h-6 bg-[#f8fafc] rounded-full border border-gray-100 -translate-y-1/2"></div>
+                            <div className="absolute top-1/2 -right-3 w-6 h-6 bg-[#f8fafc] rounded-full border border-gray-100 -translate-y-1/2"></div>
+                         </div>
+                      ))
+                   )}
+                </div>
+                
+                <div className="bg-indigo-600 p-10 rounded-[3rem] text-white overflow-hidden relative">
+                   <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full -mr-32 -mt-32"></div>
+                   <div className="relative z-10 flex flex-col md:flex-row items-center gap-8">
+                      <div className="p-5 bg-white/20 backdrop-blur-md rounded-[2rem]">
+                         <Sparkles className="w-10 h-10" />
+                      </div>
+                      <div className="text-center md:text-left flex-1">
+                         <h3 className="text-xl font-black uppercase tracking-tight mb-1">Dapatkan Lebih Banyak Reward!</h3>
+                         <p className="text-white/70 text-sm font-medium">Lakukan transaksi minimal 10 kali menggunakan Saldo MW-Wallet untuk mendapatkan bonus voucher saldo otomatis.</p>
+                      </div>
+                      <button 
+                         onClick={() => setView('topup')}
+                         className="px-8 py-4 bg-white text-indigo-600 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-indigo-50 transition-all active:scale-95"
+                      >
+                         Top Up Sekarang
+                      </button>
+                   </div>
+                </div>
+             </div>
+          )}
           {view === 'profile' && (
             <motion.div
               key="profile"
@@ -1008,10 +1514,12 @@ const App: React.FC = () => {
           {view === 'customer-service' && auth.username && (
              <CustomerService username={auth.username} onBack={() => setView('home')} />
           )}
+
+          {view === 'community-chat' && auth.username && (
+             <CommunityChat username={auth.username} onBack={() => setView('home')} isAdmin={auth.role === 'admin'} />
+          )}
         </AnimatePresence>
       </main>
-
-      <AiAssistant />
       
       {/* Floating Customer Service Button */}
       {auth.isLoggedIn && view !== 'customer-service' && auth.role !== 'admin' && (
@@ -1026,9 +1534,7 @@ const App: React.FC = () => {
         >
           <MessageCircle className="w-8 h-8 group-hover:rotate-12 transition-transform" />
           {unreadMessages > 0 && (
-            <span className="absolute -top-1 -right-1 w-6 h-6 bg-red-500 text-white text-[10px] font-black rounded-full flex items-center justify-center border-2 border-white animate-bounce shadow-lg">
-              {unreadMessages}
-            </span>
+            <span className="absolute top-3 right-3 w-3.5 h-3.5 bg-red-500 rounded-full border-2 border-white animate-pulse shadow-md"></span>
           )}
         </motion.button>
       )}
@@ -1036,7 +1542,7 @@ const App: React.FC = () => {
       <footer className="bg-white border-t py-20 mt-20">
         <div className="max-w-7xl mx-auto px-4 text-center">
           <div className="flex items-center justify-center gap-2 mb-8">
-            <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-black shadow-lg shadow-blue-100">MW</div>
+            <img src="https://i.imgur.com/oR61kTA.png" className="w-10 h-10 object-contain" alt="MWSTORE Logo" />
             <span className="text-2xl font-black text-gray-900 tracking-tighter">MWSTORE</span>
           </div>
           <p className="text-gray-400 text-[10px] font-black uppercase tracking-[0.4em] mb-12">Official MW-Store Enabled Commerce</p>

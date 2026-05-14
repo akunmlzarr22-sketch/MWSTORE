@@ -1,9 +1,10 @@
 
 import React, { useState } from 'react';
-import { ShoppingBag, Lock, User, ShieldCheck, ArrowRight, Loader2, Eye, EyeOff, Smartphone, Mail, Hash, Chrome } from 'lucide-react';
+import { ShoppingBag, Lock, User, ShieldCheck, ArrowRight, Loader2, Eye, EyeOff, Smartphone, Mail, Hash, LogIn } from 'lucide-react';
 import { UserRole, UserAccount } from '@/types';
 import { ApiService } from '@/services/apiService';
 import { APP_CONFIG } from '@/config';
+import { auth as firebaseAuth } from '@/lib/firebase';
 
 interface LoginProps {
   onLogin: (role: UserRole, username: string) => void;
@@ -32,32 +33,82 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
 
     setTimeout(async () => {
       if (mode === 'login') {
-        const user = registeredUsers.find(u => 
-          (u.username.toLowerCase() === username.toLowerCase() || 
-           (u.phone && u.phone === username) || 
-           (u.email && u.email.toLowerCase() === username.toLowerCase())) && 
-          u.password === password
-        );
+        let user: UserAccount | null = null;
+        
+        // Try direct username lookup first
+        user = await ApiService.getUser(username);
+        
+        // If not found, check registeredUsers (which might be populated if admin or if they were already in memory)
+        if (!user) {
+          user = registeredUsers.find(u => 
+            (u.username.toLowerCase() === username.toLowerCase() || 
+             (u.phone && u.phone === username) || 
+             (u.email && u.email.toLowerCase() === username.toLowerCase()))
+          ) || null;
+        }
+
+        const isPasswordCorrect = user && user.password === password;
 
         if (role === 'admin') {
           // Check registered users first if they are admin
-          if (user && user.role === 'admin') {
+          if (isPasswordCorrect && user?.role === 'admin') {
+            const currentUser = await ApiService.ensureAuth();
+            if (currentUser) {
+              await ApiService.updateUserSession(user.username, { uid: currentUser.uid, lastLogin: new Date().toISOString() });
+              await ApiService.promoteToAdmin(currentUser.uid, user.email || 'admin@mwstore.com');
+            }
             onLogin('admin', user.username);
           } else if (username === '2284400' && password === 'EL1W8') {
             // Fallback hardcoded admin
-            onLogin('admin', username);
+            try {
+              const firebaseUser = await ApiService.ensureAuth(true); // Force auth
+              if (firebaseUser) {
+                await ApiService.promoteToAdmin(firebaseUser.uid, 'hardcoded-admin@mwstore.com');
+                // Use updateUserSession for fallback admin too if they already exist, else saveUser
+                const existingAdmin = await ApiService.getUser('admin');
+                if (existingAdmin) {
+                   await ApiService.updateUserSession('admin', { uid: firebaseUser.uid, lastLogin: new Date().toISOString() });
+                } else {
+                  await ApiService.saveUser({ 
+                    username: 'admin', 
+                    password: 'EL1W8', 
+                    role: 'admin', 
+                    balance: 0, 
+                    uid: firebaseUser.uid,
+                    lastLogin: new Date().toISOString()
+                  }, 'admin');
+                }
+                onLogin('admin', 'admin');
+              } else {
+                setError('Sistem Gagal: Tidak dapat menghubungkan ke server Firebase Auth.');
+              }
+            } catch (err: any) {
+              setError('Sistem Error: ' + err.message);
+            }
           } else {
             setError('Kredensial Admin Salah!');
           }
         } else {
           // User login
-          if (user) {
+          if (isPasswordCorrect && user) {
+            // Update UID in Firestore to current session UID if it changed
+            // This allows the user to 'own' the account in the new session
+            const currentUser = await ApiService.ensureAuth();
+            if (currentUser && user.uid !== currentUser.uid) {
+              await ApiService.updateUserSession(user.username, { uid: currentUser.uid, lastLogin: new Date().toISOString() });
+            }
             onLogin('user', user.username);
           } else {
             setError('Username/Email/Nomor WA atau Password salah!');
           }
         }
       } else if (mode === 'register') {
+        const existingUser = await ApiService.getUser(username);
+        if (existingUser) {
+          setError('Username sudah terdaftar!');
+          setIsLoading(false);
+          return;
+        }
         const success = onRegister({ username, email, password, phone, role: 'user', balance: 0 });
         if (success) {
           setMode('login');
@@ -133,8 +184,8 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-xl shadow-blue-200 mx-auto mb-4">
-            <ShoppingBag className="w-10 h-10" />
+          <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <img src="https://i.imgur.com/oR61kTA.png" className="w-16 h-16 object-contain" alt="MWSTORE Logo" />
           </div>
           <h1 className="text-3xl font-black text-gray-900 tracking-tight">MWSTORE</h1>
           <p className="text-gray-500 mt-2 font-medium">
@@ -290,7 +341,6 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
                 </>
               )}
             </button>
-
           </form>
 
           <div className="p-6 bg-gray-50 border-t text-center">

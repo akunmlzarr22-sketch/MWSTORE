@@ -34,11 +34,13 @@ export interface Message {
   sender: string;
   recipient: string;
   content: string;
+  imageUrl?: string;
   timestamp: string;
   read: boolean;
+  senderUid?: string;
 }
 
-export type View = 'home' | 'cart' | 'admin' | 'checkout' | 'orders' | 'topup' | 'profile' | 'customer-service';
+export type View = 'home' | 'cart' | 'admin' | 'checkout' | 'orders' | 'topup' | 'profile' | 'customer-service' | 'community-chat' | 'vouchers';
 
 export type UserRole = 'admin' | 'user' | null;
 
@@ -59,6 +61,40 @@ export interface UserAccount {
   balance: number;
   currentOtp?: string;
   otpExpiry?: string;
+  uid?: string;
+  createdAt?: string;
+}
+
+export interface Voucher {
+  id: string;
+  code: string;
+  amount: number;
+  type: 'fixed' | 'percentage';
+  isActive: boolean;
+  isUsed?: boolean;
+  minPurchase?: number;
+  expiryDate?: string;
+  createdAt?: string;
+  recipient?: string;
+}
+
+export interface PaymentGatewayConfig {
+  provider: 'Pak Kasir' | 'Manual';
+  merchantCode?: string;
+  apiKey: string;
+  privateKey?: string;
+  baseUrl?: string;
+  isActive: boolean;
+  mode?: 'Sandbox' | 'Production';
+  slug?: string;
+  webhookSecret?: string;
+}
+
+export interface PaymentSettings {
+  id: string;
+  gateways: PaymentGatewayConfig[];
+  updatedAt: string;
+  updatedBy: string;
 }
 
 export interface AuthState {

@@ -1,8 +1,4 @@
 {
-  "nama"MWSTORE"
-  "desciption": "Aplikasi Jualan Modern dengan fitur Admin Monitoring, Konsultasi Langsung, dan Asisten AI.",
-  "requestFramePermissions": [
-    "camera"
-  ],
-  "majorCapabilities": []
+  "name": "MWSTORE",
+  "description": "Aplikasi Jualan Modern dengan fitur Admin Monitoring, Konsultasi Langsung, dan Asisten AI."
 }

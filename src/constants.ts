@@ -81,6 +81,66 @@ export const MOCK_PRODUCTS: Product[] = [
     image: 'https://picsum.photos/seed/watch/600/400',
     rating: 4.7,
     stock: 15
+  },
+  {
+    id: 'wp-1',
+    name: 'Weekly Diamond Pass',
+    description: 'Diamond Pass Mingguan MLBB. Dapatkan 210 Diamond total dalam 7 hari.',
+    price: 30000,
+    category: 'Top Up Game',
+    image: 'https://i.imgur.com/vH3y1uN.png',
+    rating: 4.9,
+    stock: 999,
+    productType: 'Duplikat',
+    inventory: ['ISI_OTOMATIS_VIA_ID']
+  },
+  {
+    id: 'dm-86',
+    name: '86 Diamonds MLBB',
+    description: 'Top Up 86 Diamonds Mobile Legends: Bang Bang.',
+    price: 21000,
+    category: 'Top Up Game',
+    image: 'https://i.imgur.com/vH3y1uN.png',
+    rating: 4.8,
+    stock: 999,
+    productType: 'Duplikat',
+    inventory: ['ISI_OTOMATIS_VIA_ID']
+  },
+  {
+    id: 'dm-172',
+    name: '172 Diamonds MLBB',
+    description: 'Top Up 172 Diamonds Mobile Legends: Bang Bang.',
+    price: 42000,
+    category: 'Top Up Game',
+    image: 'https://i.imgur.com/vH3y1uN.png',
+    rating: 4.8,
+    stock: 999,
+    productType: 'Duplikat',
+    inventory: ['ISI_OTOMATIS_VIA_ID']
+  },
+  {
+    id: 'dm-257',
+    name: '257 Diamonds MLBB',
+    description: 'Top Up 257 Diamonds Mobile Legends: Bang Bang.',
+    price: 63000,
+    category: 'Top Up Game',
+    image: 'https://i.imgur.com/vH3y1uN.png',
+    rating: 4.9,
+    stock: 999,
+    productType: 'Duplikat',
+    inventory: ['ISI_OTOMATIS_VIA_ID']
+  },
+  {
+    id: 'acc-nf-1',
+    name: 'Netflix 1 Bulan Shared',
+    description: 'Akun Netflix Shared 1 Bulan. Full Garansi 30 Hari.',
+    price: 35000,
+    category: 'Voucher App',
+    image: 'https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?q=80&w=600&h=400&auto=format&fit=crop',
+    rating: 4.6,
+    stock: 3,
+    productType: 'Unik',
+    inventory: ['NF-EMAIL1:PASS1', 'NF-EMAIL2:PASS2', 'NF-EMAIL3:PASS3']
   }
 ];
 

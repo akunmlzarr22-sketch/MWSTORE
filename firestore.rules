@@ -1,7 +1,7 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 1. Default deny catch-all
+    // Global Safety Net
     match /{document=**} {
       allow read, write: if false;
     }
@@ -10,47 +10,95 @@ service cloud.firestore {
     function isSignedIn() {
       return request.auth != null;
     }
-    
+
     function isAdmin() {
       return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (exists(/databases/$(database)/documents/users/admin) && get(/databases/$(database)/documents/users/admin).data.uid == request.auth.uid) ||
         request.auth.token.email == 'akunmlzarr22@gmail.com' ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        request.auth.token.email == 'irzag5539@gmail.com' ||
+        request.auth.token.email == 'admin@mwstore.com'
       );
     }
 
-    // 2. Products: Public read, Admin write
+    function isOwner(username) {
+      return isSignedIn() && (
+        (exists(/databases/$(database)/documents/users/$(username)) && 
+         get(/databases/$(database)/documents/users/$(username)).data.uid == request.auth.uid) ||
+        // Fallback or more efficient check if doc already has uid
+        (resource != null && resource.data.uid == request.auth.uid)
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Products
     match /products/{productId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    // 3. Users: User can read/write their own, Admin can do all
+    // Users
     match /users/{username} {
-      allow read: if true; // Public for login lookup, though can be hardened
-      allow write: if true; // Public for registration, though can be hardened
+      // Allow reading user profiles to check existence/password during login
+      allow read: if true; 
+      allow create: if true; 
+      // Allow update if admin, OR if the current UID matches, OR if the password/identity matches
+      allow update: if isAdmin() || 
+                    (isSignedIn() && (
+                      request.auth.uid == resource.data.get('uid', null) || 
+                      (resource.data.get('uid', null) == null && request.resource.data.uid == request.auth.uid)
+                    )) ||
+                    (request.resource.data.get('password', '') == resource.data.password && 
+                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid', 'lastLogin', 'currentOtp', 'otpExpiry']));
+      allow delete: if isAdmin();
     }
 
-    // 4. Orders: Owner and Admin
+    // Orders
     match /orders/{orderId} {
-      allow read: if true; 
-      allow write: if true; 
+      // Allow read/create for everyone for the demo/prototype
+      allow read, create: if true;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
 
-    // 5. Topups: Owner and Admin
+    // Topups
     match /topups/{topupId} {
+      allow read, create: if true;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Vouchers
+    match /vouchers/{code} {
       allow read: if true; 
-      allow write: if true; 
+      allow write: if isAdmin();
     }
 
-    // 6. Messages: Sender, Recipient, and Admin
+    // Messages
     match /messages/{messageId} {
-      allow read: if true;
-      allow write: if true;
+      allow read, create: if true;
+      allow update: if isAdmin() || (isSignedIn() && (resource.data.uid == request.auth.uid || resource.data.recipient == "admin") && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']));
+      allow delete: if isAdmin();
     }
 
-    // 7. Settings: Public read, Admin write
+    match /admins/{uid} {
+      allow read: if isSignedIn();
+      allow write: if (isSignedIn() && uid == request.auth.uid && 
+                      (request.auth.token.email == 'akunmlzarr22@gmail.com' || 
+                       request.auth.token.email == 'irzag5539@gmail.com' || 
+                       request.auth.token.email == 'admin@mwstore.com' ||
+                       (exists(/databases/$(database)/documents/users/admin) && get(/databases/$(database)/documents/users/admin).data.get('uid', null) == request.auth.uid))
+                    ) || isAdmin();
+    }
+
+    // Settings
     match /settings/{settingId} {
-      allow read: if true;
+      // Global settings are public for maintenance mode check
+      // Payment settings require admin for read/write
+      allow read: if settingId == 'global' || isAdmin();
       allow write: if isAdmin();
     }
   }
