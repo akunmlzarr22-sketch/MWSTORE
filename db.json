@@ -1,0 +1,46 @@
+{
+  "users": {
+    "REHAN": {
+      "email": "irzag5539@gmail.com",
+      "phone": "083845890648",
+      "role": "user",
+      "password": "1",
+      "username": "REHAN",
+      "balance": 984460
+    },
+    "admin": {
+      "password": "EL1W8",
+      "role": "admin",
+      "createdAt": "2026-05-13T15:11:27.281Z",
+      "balance": 0,
+      "lastLogin": "2026-05-13T22:47:25.401Z",
+      "uid": "ttlBwsJnZUcWU2XUra1VRTz4TBI2",
+      "username": "admin"
+    },
+    "gaga": {
+      "balance": 0,
+      "username": "gaga",
+      "uid": "ttlBwsJnZUcWU2XUra1VRTz4TBI2",
+      "password": "1",
+      "phone": "00282",
+      "email": "rajendramirzawardhana@gmail.com",
+      "role": "user"
+    },
+    "irza": {
+      "balance": 79830,
+      "username": "irza",
+      "uid": "ttlBwsJnZUcWU2XUra1VRTz4TBI2",
+      "password": "123",
+      "email": "akunmlzarr22@gmail.com",
+      "phone": "99392",
+      "role": "user"
+    }
+  },
+  "products": [],
+  "orders": [],
+  "topups": [],
+  "messages": [],
+  "vouchers": [],
+  "paymentSettings": null,
+  "settings": null
+}

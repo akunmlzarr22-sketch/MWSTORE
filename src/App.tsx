@@ -9,6 +9,10 @@ import Login from '@/components/Login';
 import UserProfile from '@/components/UserProfile';
 import CustomerService from '@/components/CustomerService';
 import CommunityChat from '@/components/CommunityChat';
+import { JasaOtpSmsRetriever } from './components/JasaOtpSmsRetriever';
+import { SmmOrderTracker } from './components/SmmOrderTracker';
+import { NokosMenuTab } from './components/NokosMenuTab';
+import { SmmMenuTab } from './components/SmmMenuTab';
 import { APP_CONFIG } from '@/config';
 import { ApiService } from '@/services/apiService';
 import { Product, CartItem, Order, View, AuthState, UserRole, UserAccount, Message, Voucher, PaymentSettings, PaymentGatewayConfig } from '@/types';
@@ -117,8 +121,24 @@ const App: React.FC = () => {
     };
 
     initializeAuth();
+    
+    // Add background polling for balance updates
+    const pollInterval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        ApiService.syncFromServer().catch(console.error);
+      }
+    }, 5000);
 
-    return () => {};
+    // Immediate sync on window focus (important after payment)
+    const handleFocus = () => {
+      ApiService.syncFromServer().catch(console.error);
+    };
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      clearInterval(pollInterval);
+      window.removeEventListener('focus', handleFocus);
+    };
   }, []);
 
   // Use Reactive Listeners for Products, Users, and Orders
@@ -236,6 +256,14 @@ const App: React.FC = () => {
   const [voucherCode, setVoucherCode] = useState('');
   const [appliedVoucher, setAppliedVoucher] = useState<Voucher | null>(null);
   const [isMaintenance, setIsMaintenance] = useState(false);
+  const [activeMenus, setActiveMenus] = useState<Record<string, boolean>>({
+    nokos: true,
+    game: true,
+    pulsa: true,
+    ewallet: true,
+    voucher: true,
+    smm: true
+  });
   const [currentDateTime, setCurrentDateTime] = useState(new Date());
   const [unreadMessages, setUnreadMessages] = useState<number>(0);
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettings | null>({
@@ -266,7 +294,27 @@ const App: React.FC = () => {
     });
     
     const unsubscribeSystem = ApiService.listenToSettings((settings) => {
-      if (settings) setIsMaintenance(settings.maintenanceMode);
+      if (settings) {
+        setIsMaintenance(settings.maintenanceMode);
+        
+        let mergedActiveMenus = settings.activeMenus ? { ...settings.activeMenus } : {
+          nokos: true,
+          game: true,
+          pulsa: true,
+          ewallet: true,
+          voucher: true,
+          smm: true
+        };
+        
+        if (settings.smmSettings) {
+          mergedActiveMenus.smm = settings.smmSettings.isActive !== false;
+        }
+        if (settings.nokosSettings) {
+          mergedActiveMenus.nokos = settings.nokosSettings.isActive !== false;
+        }
+        
+        setActiveMenus(mergedActiveMenus);
+      }
     });
     
     return () => {
@@ -275,17 +323,17 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Periodic Server Sync (Background pull from server)
+  // Auto-redirect if viewing a disabled service
   useEffect(() => {
-    if (!auth.isLoggedIn) return;
-    
-    // Check for updates every 10 seconds
-    const syncInterval = setInterval(() => {
-      ApiService.syncFromServer();
-    }, 10000);
-    
-    return () => clearInterval(syncInterval);
-  }, [auth.isLoggedIn]);
+    if (view === 'smm' && activeMenus.smm === false) {
+      setView('home');
+    }
+    if (view === 'nokos' && activeMenus.nokos === false) {
+      setView('home');
+    }
+  }, [view, activeMenus]);
+
+  // Periodic Server Sync handled by global listener in initializeAuth
 
   // Sync unread messages and notifications
   useEffect(() => {
@@ -302,6 +350,11 @@ const App: React.FC = () => {
 
         // Handle notification flags
         const newestMsg = msgs[0];
+        if (newestMsg && !newestMsg.read && newestMsg.sender === 'System') {
+           if (newestMsg.content.includes('berhasil') || newestMsg.content.includes('Top up')) {
+              ApiService.syncFromServer();
+           }
+        }
         if (newestMsg && newestMsg.id !== lastProcessedMsgId.current) {
           lastProcessedMsgId.current = newestMsg.id;
         }
@@ -319,15 +372,52 @@ const App: React.FC = () => {
     }
   }, [auth.isLoggedIn, auth.username, auth.role]);
 
-  const categories = ['Semua', ...new Set(products.map(p => p.category))];
+  const categories = useMemo(() => {
+    const cats = products
+      .map(p => (p.category || '').trim())
+      .filter(Boolean);
+    const seen = new Set<string>();
+    const uniqueCats: string[] = [];
+    for (const cat of cats) {
+      const lower = cat.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        
+        // Dynamic title casing or fallback
+        const formatted = cat.charAt(0).toUpperCase() + cat.slice(1);
+        uniqueCats.push(formatted);
+      }
+    }
+    return ['Semua', ...uniqueCats];
+  }, [products]);
 
   const filteredProducts = useMemo(() => {
     return products.filter(p => {
       const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesCategory = selectedCategory === 'Semua' || p.category === selectedCategory;
+      const matchesCategory = selectedCategory === 'Semua' || p.category.toLowerCase() === selectedCategory.toLowerCase();
       return matchesSearch && matchesCategory;
     });
   }, [searchQuery, selectedCategory, products]);
+
+  const greetingText = useMemo(() => {
+    const hour = currentDateTime.getHours();
+    let greeting = 'Selamat Malam';
+    let emoji = '🌙';
+
+    if (hour >= 4 && hour < 11) {
+      greeting = 'Selamat Pagi';
+      emoji = '🌅';
+    } else if (hour >= 11 && hour < 15) {
+      greeting = 'Selamat Siang';
+      emoji = '☀️';
+    } else if (hour >= 15 && hour < 18) {
+      greeting = 'Selamat Sore';
+      emoji = '🌇';
+    }
+    
+    const displayName = auth.isLoggedIn && auth.username ? auth.username : 'Pelanggan';
+    return `${greeting}, ${displayName} ${emoji}`;
+  }, [currentDateTime, auth.isLoggedIn, auth.username]);
 
   const handleLogin = async (role: UserRole, username: string) => {
     const normalizedUsername = username.toLowerCase().trim();
@@ -437,26 +527,83 @@ const App: React.FC = () => {
 
     setIsProcessing(true);
 
-    // LOGIKA PENGURANGAN STOK DAN PEMBERIAN DATA BARANG
-    const processedCart = cart.map(item => {
-      const product = products.find(p => p.id === item.id);
-      let issuedData: string[] = [];
-
-      if (product) {
-        if (product.productType === 'Unik') {
-          // Ambil item dari inventory sebanyak quantity
-          issuedData = (product.inventory || []).slice(0, item.quantity);
-        } else {
-          // Duplikat: Berikan data yang sama (inventory[0]) sebanyak quantity
-          const singleData = (product.inventory && product.inventory[0]) || 'Produk akan segera diproses';
-          issuedData = Array(item.quantity).fill(singleData);
-        }
-      }
-      return { ...item, issuedData };
-    });
-
     setTimeout(async () => {
       try {
+        // LOGIKA PENGURANGAN STOK DAN PEMBERIAN DATA BARANG (TERMASUK JASAOTP)
+        const processedCart = [];
+        for (const item of cart) {
+          const product = products.find(p => p.id === item.id);
+          let issuedData: string[] = [];
+
+          if (product && product.category.toLowerCase() === 'nokos' && product.isNokosApi) {
+            // Panggil API JasaOTP untuk order nomor baru
+            for (let q = 0; q < item.quantity; q++) {
+              try {
+                const reqBody = {
+                  negara: product.nokosCountry || '6',
+                  layanan: product.nokosService || 'wa',
+                  operator: product.nokosOperator || 'any'
+                };
+                const res = await fetch('/api/nokos/order', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(reqBody)
+                });
+                const resJson = await res.json();
+                if (resJson && resJson.success && resJson.data) {
+                  const oData = resJson.data; // e.g. { id: 121151, nomor: "628xxx" }
+                  issuedData.push(`JASAOTP_ORDER:${JSON.stringify({
+                    id: oData.id,
+                    number: oData.nomor,
+                    country: product.nokosCountry || '6',
+                    service: product.nokosService || 'wa',
+                    operator: product.nokosOperator || 'any',
+                    status: 'Aktif',
+                    createdAt: Date.now()
+                  })}`);
+                } else {
+                  let errorMsg = resJson.message || "Saldo API JasaOTP habis atau operator kehabisan stok nomor.";
+                  if (errorMsg.includes("ID negara tidak valid")) {
+                    errorMsg = "ID Negara tidak valid (Saldo API JasaOTP Anda di provider habis / kurang dari Rp 3.000, atau IP server belum didaftarkan di dashboard JasaOTP).";
+                  }
+                  throw new Error(errorMsg);
+                }
+              } catch (err: any) {
+                console.error("[App] JasaOTP Order error:", err);
+                issuedData.push(`ERR:${err.message || 'Error koneksi service'}`);
+              }
+            }
+          } else if (product) {
+            if (product.productType === 'Unik') {
+              // Ambil item dari inventory sebanyak quantity
+              issuedData = (product.inventory || []).slice(0, item.quantity);
+            } else {
+              // Duplikat: Berikan data yang sama (inventory[0]) sebanyak quantity
+              const singleData = (product.inventory && product.inventory[0]) || 'Produk akan segera diproses';
+              issuedData = Array(item.quantity).fill(singleData);
+            }
+          }
+          processedCart.push({ ...item, issuedData });
+        }
+
+        // Refund Verifikator: batalkan transaksi apabila JasaOTP gagal menyuplai nomor
+        const hasNokosError = processedCart.some(item => 
+          item.issuedData && item.issuedData.some(d => d.startsWith('ERR:'))
+        );
+
+        if (hasNokosError) {
+          let errMsg = "Stok nomor virtual sedang habis di JasaOTP. Silakan coba beberapa saat lagi.";
+          for (const item of processedCart) {
+            const errD = item.issuedData?.find(d => d.startsWith('ERR:'));
+            if (errD) {
+              errMsg = errD.replace('ERR:', '');
+              break;
+            }
+          }
+          alert(`Gagal Memproses Pembelian:\n${errMsg}`);
+          setIsProcessing(false);
+          return;
+        }
         // Update Produk (Kurangi Stok)
         const newProducts = products.map(p => {
           const cartItem = cart.find(ci => ci.id === p.id);
@@ -514,9 +661,10 @@ const App: React.FC = () => {
           const gateway = paymentSettings?.gateways.find(g => g.provider === paymentMethod);
           if (gateway && gateway.provider === 'Pak Kasir' && gateway.slug) {
             console.log(`Processing with Pak Kasir [${gateway.slug}]...`);
-            // Constructed URL for Pak Kasir (Common pattern)
+            // Panduan Resmi Pak Kasir: https://app.pakasir.com/pay/{slug}/{amount}?order_id={order_id}
             const amount = finalTotal;
-            const checkoutUrl = `https://pakkasir.id/checkout/${gateway.slug}?external_id=${orderId}&amount=${amount}&callback_url=${encodeURIComponent(window.location.origin + '/?view=orders')}`;
+            const baseUrl = gateway.baseUrl || 'https://app.pakasir.com';
+            const checkoutUrl = `${baseUrl}/pay/${gateway.slug}/${amount}?order_id=${orderId}&redirect=${encodeURIComponent(window.location.origin + '/?view=orders')}&qris_only=1`;
             
             // In a real implementation with a backend, you'd create a session first via API.
             // For this frontend-only request, we redirect to the presumed checkout link.
@@ -551,7 +699,12 @@ const App: React.FC = () => {
         setCart([]);
         setAppliedVoucher(null);
         setVoucherCode('');
-        setView('orders');
+        if (auth.role === 'admin') {
+          setView('orders');
+        } else {
+          alert('Pembayaran Berhasil! Pesanan Anda telah diterima dan akan segera diproses oleh admin. Silakan pantau status pesanan dengan menghubungi Admin via Layanan CS.');
+          setView('home');
+        }
       } catch (error) {
         const err = error instanceof Error ? error.message : String(error);
         let displayErr = "Terjadi kesalahan saat memproses pembayaran.";
@@ -605,13 +758,37 @@ const App: React.FC = () => {
           // Automated Gateway
           const gateway = paymentSettings?.gateways.find(g => g.provider === topupPaymentMethod);
           if (gateway && gateway.provider === 'Pak Kasir' && gateway.slug) {
-            const checkoutUrl = `https://pakkasir.id/checkout/${gateway.slug}?external_id=${topupId}&amount=${topupAmount}&callback_url=${encodeURIComponent(window.location.origin + '/?view=profile')}`;
+            const baseUrl = gateway.baseUrl || 'https://app.pakasir.com';
+            const checkoutUrl = `${baseUrl}/pay/${gateway.slug}/${topupAmount}?order_id=${topupId}&redirect=${encodeURIComponent(window.location.origin + '/?view=profile')}&qris_only=1`;
             
             setTimeout(() => {
               window.open(checkoutUrl, '_blank');
             }, 500);
             
             alert(`Permintaan Top Up ID ${topupId} berhasil dibuat. Anda akan diarahkan ke halaman pembayaran ${gateway.provider}.`);
+          } else if (gateway && gateway.provider === 'SanPay' && gateway.baseUrl) {
+            // SanPay / BukaOlshop Unique Link Implementation
+            // Menggunakan parameter id dan nominal sebagai standar integrasi BukaOlshop
+            const checkoutUrl = gateway.baseUrl.includes('?') 
+              ? `${gateway.baseUrl}&id=${topupId}&nominal=${topupAmount}&external_id=${topupId}` 
+              : `${gateway.baseUrl}?id=${topupId}&nominal=${topupAmount}&external_id=${topupId}`;
+            
+            setTimeout(() => {
+               window.open(checkoutUrl, '_blank');
+            }, 500);
+            
+            alert(`Permintaan Top Up ID ${topupId} Berhasil. Klik OK untuk menuju Link Pembayaran SanPay.`);
+          } else if (gateway && gateway.provider === 'ZannPay' && gateway.baseUrl) {
+            // ZannPay Unique Link Implementation
+            const checkoutUrl = gateway.baseUrl.includes('?') 
+              ? `${gateway.baseUrl}&id=${topupId}&nominal=${topupAmount}&external_id=${topupId}` 
+              : `${gateway.baseUrl}?id=${topupId}&nominal=${topupAmount}&external_id=${topupId}`;
+            
+            setTimeout(() => {
+               window.open(checkoutUrl, '_blank');
+            }, 500);
+            
+            alert(`Permintaan Top Up ID ${topupId} Berhasil. Klik OK untuk menuju Link Pembayaran ZannStore.`);
           } else if (gateway) {
             alert(`Permintaan Top Up ID ${topupId} berhasil dibuat menggunakan ${gateway.provider}. Silakan cek status saldo Anda secara berkala.`);
           }
@@ -707,63 +884,91 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#f8fafc]">
-      <div className="bg-indigo-600 text-white text-[10px] py-2 px-4 flex justify-center items-center font-black uppercase tracking-widest gap-2">
-         <motion.div
-           animate={{ scale: [1, 1.2, 1] }}
-           transition={{ repeat: Infinity, duration: 2 }}
-         >
-           <Wallet className="w-3 h-3" />
-         </motion.div>
-         Gunakan MW-Store untuk Transaksi Lebih Cepat & Aman
+      <div className="bg-indigo-600 text-white text-[10px] py-2 overflow-hidden flex font-black uppercase tracking-widest relative border-b border-indigo-700/30">
+        <motion.div 
+          className="flex whitespace-nowrap shrink-0 gap-8 min-w-full"
+          animate={{ x: ["0%", "-50%"] }}
+          transition={{
+            repeat: Infinity,
+            repeatType: "loop",
+            duration: 16,
+            ease: "linear"
+          }}
+        >
+          {/* Group 1 */}
+          <div className="flex gap-8 shrink-0">
+            <span className="flex items-center gap-1.5">
+              <Wallet className="w-3.5 h-3.5 text-indigo-200" /> Gunakan MW-Store untuk Transaksi Lebih Cepat & Aman
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Wallet className="w-3.5 h-3.5 text-indigo-200" /> Gunakan MW-Store untuk Transaksi Lebih Cepat & Aman
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Wallet className="w-3.5 h-3.5 text-indigo-200" /> Gunakan MW-Store untuk Transaksi Lebih Cepat & Aman
+            </span>
+          </div>
+          {/* Group 2 (identical duplicate content) */}
+          <div className="flex gap-8 shrink-0">
+            <span className="flex items-center gap-1.5">
+              <Wallet className="w-3.5 h-3.5 text-indigo-200" /> Gunakan MW-Store untuk Transaksi Lebih Cepat & Aman
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Wallet className="w-3.5 h-3.5 text-indigo-200" /> Gunakan MW-Store untuk Transaksi Lebih Cepat & Aman
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Wallet className="w-3.5 h-3.5 text-indigo-200" /> Gunakan MW-Store untuk Transaksi Lebih Cepat & Aman
+            </span>
+          </div>
+        </motion.div>
       </div>
 
       <nav className="bg-white/95 backdrop-blur-md border-b sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-4">
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 sm:h-16 flex items-center justify-between">
+          <div className="flex items-center gap-1.5 sm:gap-4">
             <button 
               onClick={() => setIsSidebarOpen(true)}
-              className="p-2 text-gray-500 hover:text-blue-600 transition-colors"
+              className="p-1.5 sm:p-2 text-gray-500 hover:text-blue-600 transition-colors"
             >
-              <Menu className="w-6 h-6" />
+              <Menu className="w-5 h-5 sm:w-6 sm:h-6" />
             </button>
-            <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('home')}>
-              <img src="https://i.imgur.com/oR61kTA.png" className="w-9 h-9 object-contain" alt="MWSTORE Logo" />
-              <span className="text-lg font-black text-gray-900 tracking-tighter">MWSTORE</span>
+            <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => setView('home')}>
+              <img src="https://i.imgur.com/oR61kTA.png" className="w-7 h-7 sm:w-9 sm:h-9 object-contain" alt="MWSTORE Logo" />
+              <span className="text-sm sm:text-lg font-black text-gray-900 tracking-tighter">MWSTORE</span>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-3">
             {/* Customer Service Hub Shortcut */}
             <button 
               onClick={() => setView('customer-service')}
-              className="relative p-2 text-gray-700 hover:text-indigo-600 transition-colors"
+              className="relative p-1.5 sm:p-2 text-gray-700 hover:text-indigo-600 transition-colors"
               title="Layanan CS"
             >
-              <MessageCircle className="w-6 h-6" />
+              <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6" />
               {unreadMessages > 0 && (
-                <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white animate-pulse"></span>
+                <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white animate-pulse"></span>
               )}
             </button>
 
             {/* Balance Badge - Clickable to Top Up */}
             <button 
               onClick={() => setView('topup')}
-              className="flex items-center gap-2 px-3 py-1.5 md:px-4 md:py-2 bg-indigo-50 border border-indigo-100 rounded-2xl hover:bg-indigo-100 transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1 sm:px-4 sm:py-2 bg-indigo-50 border border-indigo-100 rounded-xl hover:bg-indigo-100 transition-colors"
             >
-               <div className="w-6 h-6 bg-indigo-600 rounded-lg flex items-center justify-center text-white shadow-sm">
-                  <Plus className="w-3.5 h-3.5" />
+               <div className="w-5 h-5 sm:w-6 sm:h-6 bg-indigo-600 rounded-md sm:rounded-lg flex items-center justify-center text-white shadow-sm flex-shrink-0">
+                  <Plus className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                </div>
                <div className="hidden sm:flex flex-col items-start text-left">
                   <span className="text-[8px] font-black text-indigo-400 uppercase tracking-widest leading-none">Isi Saldo</span>
                   <span className="text-xs font-black text-indigo-700 leading-tight">{formatIDR(auth.balance || 0)}</span>
                </div>
-               <div className="sm:hidden text-xs font-black text-indigo-700">{formatIDR(auth.balance || 0)}</div>
+               <div className="sm:hidden text-[11px] font-black text-indigo-700 font-mono">{formatIDR(auth.balance || 0)}</div>
             </button>
 
-            <button onClick={() => setView('cart')} className="relative p-2 text-gray-700 hover:text-blue-600 transition-colors">
-              <ShoppingCart className="w-6 h-6" />
+            <button onClick={() => setView('cart')} className="relative p-1.5 sm:p-2 text-gray-700 hover:text-blue-600 transition-colors">
+              <ShoppingCart className="w-5 h-5 sm:w-6 sm:h-6" />
               {cartCount > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold w-4 h-4 flex items-center justify-center rounded-full border-2 border-white">
+                <span className="absolute top-0.5 right-0.5 bg-red-500 text-white text-[8px] sm:text-[9px] font-bold w-3.5 h-3.5 sm:w-4 sm:h-4 flex items-center justify-center rounded-full border border-white">
                   {cartCount}
                 </span>
               )}
@@ -817,13 +1022,15 @@ const App: React.FC = () => {
                   <span>Profil Saya</span>
                 </button>
 
-                <button 
-                  onClick={() => { setView('orders'); setIsSidebarOpen(false); }}
-                  className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'orders' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'text-gray-400 hover:bg-gray-50'}`}
-                >
-                  <Receipt className="w-5 h-5" />
-                  <span>Pesanan Saya</span>
-                </button>
+                {auth.isLoggedIn && (
+                  <button 
+                    onClick={() => { setView('orders'); setIsSidebarOpen(false); }}
+                    className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'orders' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'text-gray-400 hover:bg-gray-50'}`}
+                  >
+                    <Receipt className="w-5 h-5" />
+                    <span>Pesanan Saya</span>
+                  </button>
+                )}
 
                 <button 
                   onClick={() => { setView('vouchers'); setIsSidebarOpen(false); }}
@@ -855,6 +1062,16 @@ const App: React.FC = () => {
                     <span>Obrolan Komunitas</span>
                   </div>
                 </button>
+
+                {activeMenus.smm !== false && (
+                  <button 
+                    onClick={() => { setView('smm'); setIsSidebarOpen(false); }}
+                    className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all ${view === 'smm' ? 'bg-blue-600 text-white shadow-lg shadow-blue-100' : 'text-gray-400 hover:bg-gray-50'}`}
+                  >
+                    <Globe className="w-5 h-5" />
+                    <span>Suntik Sosmed</span>
+                  </button>
+                )}
 
                 {auth.role === 'admin' && (
                   <button 
@@ -895,30 +1112,33 @@ const App: React.FC = () => {
               exit={{ opacity: 0, scale: 1.02 }}
               transition={{ duration: 0.4 }}
             >
-              <div className="relative rounded-[2.5rem] overflow-hidden bg-gradient-to-br from-indigo-700 to-blue-900 p-8 md:p-14 mb-12 text-white shadow-2xl">
+              <div className="relative rounded-2xl overflow-hidden bg-gradient-to-br from-indigo-700 to-blue-900 p-4 md:p-6 mb-6 text-white shadow-lg">
                 <div className="max-w-xl relative z-10">
-                  <div className="inline-flex items-center gap-2 px-3 py-1 bg-white/10 rounded-full text-[10px] font-black uppercase tracking-widest mb-4 border border-white/10">
-                    <ShieldCheck className="w-3 h-3 text-green-400" />
+                  <div className="inline-flex items-center gap-1 px-2 py-0.5 bg-white/10 rounded-full text-[7.5px] font-bold uppercase tracking-widest mb-2 border border-white/10">
+                    <ShieldCheck className="w-2.5 h-2.5 text-green-400" />
                     MW-STORE READY {APP_VERSION}
                   </div>
-                  <h1 className="text-4xl md:text-5xl font-black mb-2 leading-[1.1]">
+                  <h1 className="text-lg md:text-xl font-extrabold mb-0.5 leading-none tracking-tight">
                     MWSTORE
                   </h1>
-                  <p className="text-blue-100/90 text-lg md:text-xl mb-10 leading-relaxed font-black uppercase tracking-[0.2em]">
+                  <div className="text-[10px] md:text-xs font-extrabold text-blue-100 tracking-wide mt-1 mb-2">
+                    {greetingText}
+                  </div>
+                  <p className="text-blue-100/80 text-[9px] md:text-[10px] mb-4 leading-relaxed font-medium uppercase tracking-wider font-mono">
                     {currentDateTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} • {currentDateTime.toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric' })}
                   </p>
-                  <div className="flex flex-wrap gap-4">
-                    <button onClick={() => setView('topup')} className="bg-white text-blue-700 px-8 py-4 rounded-2xl font-black hover:bg-blue-50 transition-all flex items-center gap-2 shadow-xl shadow-blue-900/20">
-                      <ArrowUpCircle className="w-5 h-5" />
-                      Isi Saldo Sekarang
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => setView('topup')} className="bg-white text-blue-700 px-3.5 py-1.5 rounded-lg text-[10px] font-bold hover:bg-blue-50 transition-all flex items-center gap-1 shadow-sm active:scale-95">
+                      <ArrowUpCircle className="w-3.5 h-3.5" />
+                      Isi Saldo
                     </button>
-                    <div className="flex items-center gap-3 bg-white/10 backdrop-blur-md border border-white/20 px-6 py-4 rounded-2xl">
-                       <Coins className="w-5 h-5 text-indigo-300" />
+                    <div className="flex items-center gap-1.5 bg-white/10 backdrop-blur-md border border-white/20 px-3 py-1.5 rounded-lg">
+                       <Coins className="w-3.5 h-3.5 text-indigo-300" />
                        <motion.span 
                          key={auth.balance}
                          initial={{ opacity: 0, y: -10 }}
                          animate={{ opacity: 1, y: 0 }}
-                         className="font-black text-sm"
+                         className="font-extrabold text-[10px]"
                        >
                          {formatIDR(auth.balance || 0)}
                        </motion.span>
@@ -927,35 +1147,115 @@ const App: React.FC = () => {
                 </div>
               </div>
 
-              <div className="relative mb-10 max-w-2xl mx-auto md:mx-0">
+              {/* LAYANAN PORTAL MENU UTAMA */}
+              {(() => {
+                const shortcuts = [
+                  {
+                    key: 'nokos',
+                    name: 'Nokos',
+                    category: 'Nokos',
+                    icon: (
+                      <div className="relative flex items-center justify-center w-9 h-9 bg-gradient-to-tr from-blue-50 to-blue-100 rounded-lg border border-blue-200 group-hover:scale-105 group-hover:rotate-2 transition-all text-blue-600 shadow-sm">
+                        <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 bg-blue-500 rounded-full border border-white animate-pulse" />
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 9h6M10 12h3" />
+                        </svg>
+                      </div>
+                    ),
+                    description: 'OTP SMS Virtual'
+                  },
+                  {
+                    key: 'smm',
+                    name: 'Suntik Sosmed',
+                    category: 'Suntik Sosmed',
+                    icon: (
+                      <div className="relative flex items-center justify-center w-9 h-9 bg-gradient-to-tr from-indigo-50 to-indigo-100 rounded-lg border border-indigo-200 group-hover:scale-105 group-hover:rotate-2 transition-all text-indigo-600 shadow-sm">
+                        <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 bg-indigo-500 rounded-full border border-white animate-pulse" />
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" strokeWidth="2" />
+                        </svg>
+                      </div>
+                    ),
+                    description: 'Followers & Views'
+                  }
+                ];
+
+                const visible = shortcuts.filter(s => activeMenus[s.key] !== false);
+                if (visible.length === 0) return null;
+
+                return (
+                  <div className="mb-6">
+                    <h2 className="text-[9px] font-black text-gray-900 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5">
+                      <span className="w-0.5 h-3 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-lg inline-block" />
+                      Layanan Portal MWSTORE
+                    </h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 max-w-sm">
+                      {visible.map(menu => {
+                        const isSelected = (menu.key === 'nokos' && view === 'nokos') || (menu.key === 'smm' && view === 'smm') || (selectedCategory.toLowerCase() === menu.category.toLowerCase() && view === 'home');
+                        return (
+                          <button
+                            key={menu.key}
+                            onClick={() => {
+                              if (menu.key === 'nokos') {
+                                setView('nokos');
+                              } else if (menu.key === 'smm') {
+                                setView('smm');
+                              } else {
+                                setView('home');
+                                setSelectedCategory(menu.category);
+                              }
+                            }}
+                            className={`group flex flex-col items-center text-center p-2.5 bg-white border rounded-xl transition-all hover:border-blue-400 hover:shadow-lg hover:shadow-blue-500/5 ${
+                              isSelected 
+                                ? 'border-blue-600 ring-2 ring-blue-500/5 bg-blue-50/10 shadow-sm' 
+                                : 'border-gray-100 hover:bg-gray-50/50'
+                            }`}
+                          >
+                            {menu.icon}
+                            <span className="mt-1.5 text-[9px] font-bold text-gray-900 leading-tight uppercase tracking-tight line-clamp-1">
+                              {menu.name}
+                            </span>
+                            <span className="mt-0.5 text-[7px] text-gray-400 font-bold tracking-tight uppercase line-clamp-1">
+                              {menu.description}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="relative mb-4 max-w-xs mx-auto md:mx-0">
                 <div className="relative group">
-                  <Search className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 group-focus-within:text-blue-600 transition-colors" />
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 group-focus-within:text-blue-600 transition-colors" />
                   <input
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Cari produk impianmu..."
-                    className="w-full bg-white border-2 border-gray-100 rounded-[2rem] py-5 pl-14 pr-6 focus:border-blue-500/20 focus:ring-4 focus:ring-blue-500/5 transition-all outline-none font-bold text-gray-900 shadow-sm"
+                    className="w-full bg-white border-2 border-gray-100 rounded-lg py-2 pl-8 pr-8 focus:border-blue-500/20 focus:ring-2 focus:ring-blue-500/5 transition-all outline-none font-bold text-[10px] text-gray-900 shadow-sm"
                   />
                   {searchQuery && (
                     <button 
                       onClick={() => setSearchQuery('')}
-                      className="absolute right-6 top-1/2 -translate-y-1/2 text-gray-400 hover:text-red-500 transition-colors"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-red-500 transition-colors"
                     >
-                      <X className="w-5 h-5" />
+                      <X className="w-3.5 h-3.5" />
                     </button>
                   )}
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-2 mb-10 items-center overflow-x-auto pb-4 no-scrollbar">
+              <div className="flex flex-wrap gap-1 mb-5 items-center overflow-x-auto pb-1.5 no-scrollbar">
                 {categories.map(cat => (
                   <button
                     key={cat}
                     onClick={() => setSelectedCategory(cat)}
-                    className={`px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-wider transition-all shrink-0 ${
+                    className={`px-3 py-1 rounded-md text-[8.5px] font-extrabold uppercase tracking-wider transition-all shrink-0 ${
                       selectedCategory === cat 
-                        ? 'bg-blue-600 text-white shadow-xl scale-105' 
+                        ? 'bg-blue-600 text-white shadow-sm scale-[1.01]' 
                         : 'bg-white text-gray-500 hover:bg-gray-50 border border-gray-100'
                     }`}
                   >
@@ -964,18 +1264,66 @@ const App: React.FC = () => {
                 ))}
               </div>
 
-              <div className="grid grid-cols-2 gap-3 mb-20">
-                {filteredProducts.map((product, idx) => (
-                  <motion.div
-                    key={product.id}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: idx * 0.05 }}
-                  >
-                    <ProductCard product={product} onAddToCart={addToCart} />
-                  </motion.div>
-                ))}
-              </div>
+              {filteredProducts.length === 0 ? (
+                <div className="w-full text-center py-6 px-3 bg-white border border-gray-100 rounded-xl flex flex-col items-center justify-center shadow-sm mb-10 max-w-xs mx-auto md:mx-0">
+                  <div className="w-8 h-8 bg-blue-50/50 text-blue-600 rounded-lg flex items-center justify-center text-base mb-2 shadow-sm border border-blue-100/30">
+                     🔍
+                  </div>
+                  <h3 className="text-[9px] font-black text-gray-900 uppercase tracking-widest mb-0.5">
+                     Produk Tidak Ditemukan
+                  </h3>
+                  <p className="text-[7.5px] font-bold text-gray-400 max-w-xs text-center leading-relaxed uppercase">
+                     Belum ada produk di kategori "{selectedCategory}" saat ini. Admin akan segera menambahkan produk baru!
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-5 gap-3.5 sm:gap-4 mb-20">
+                  {filteredProducts.map((product, idx) => (
+                    <motion.div
+                      key={product.id}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: idx * 0.05 }}
+                    >
+                      <ProductCard product={product} onAddToCart={addToCart} />
+                    </motion.div>
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          )}
+
+          {view === 'nokos' && (
+            <motion.div
+              key="nokos"
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 1.02 }}
+              transition={{ duration: 0.4 }}
+            >
+              <NokosMenuTab 
+                auth={auth} 
+                onUpdateBalance={(bal) => setAuth(prev => ({ ...prev, balance: bal }))} 
+                setView={setView} 
+                setOrders={setOrders} 
+              />
+            </motion.div>
+          )}
+
+          {view === 'smm' && (
+            <motion.div
+              key="smm"
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 1.02 }}
+              transition={{ duration: 0.4 }}
+            >
+              <SmmMenuTab 
+                auth={auth} 
+                onUpdateBalance={(bal) => setAuth(prev => ({ ...prev, balance: bal }))} 
+                setView={setView} 
+                setOrders={setOrders} 
+              />
             </motion.div>
           )}
 
@@ -1343,35 +1691,102 @@ const App: React.FC = () => {
                                   {order.items.map(i => i.name).join(', ')}
                                </h4>
                                
-                               {/* TAMPILKAN DATA BARANG SETELAH BAYAR */}
-                               {order.status === 'Selesai' && order.items.some(i => i.issuedData && i.issuedData.length > 0) && (
+                               {/* TAMPILKAN DATA BARANG SETELAH BAYAR ATAU LACAK SMM */}
+                               {((order.status === 'Selesai' && order.items.some(i => i.issuedData && i.issuedData.length > 0)) || 
+                                 order.items.some(i => i.issuedData?.some(d => d.startsWith('SMM_ORDER:')))) && (
                                  <div className="mt-4 space-y-3 bg-blue-50/50 p-4 rounded-2xl border border-blue-100/50 max-w-md">
                                     <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest flex items-center gap-2">
                                        <ShieldCheck className="w-3 h-3" /> 
-                                       {order.items.some(i => i.issuedData?.some(d => d !== 'Produk akan segera diproses')) 
-                                         ? 'Data Barang Terkirim' 
-                                         : 'Status Pengiriman'}
+                                       {order.items.some(i => i.issuedData?.some(d => d.startsWith('SMM_ORDER:')))
+                                         ? 'Lacak Pesanan Suntik Sosmed'
+                                         : (order.items.some(i => i.issuedData?.some(d => d !== 'Produk akan segera diproses')) 
+                                           ? 'Data Barang Terkirim' 
+                                           : 'Status Pengiriman')}
                                     </p>
-                                    <div className="space-y-2">
+                                    <div className="space-y-4">
                                        {order.items.map((item, idx) => (
                                           item.issuedData && item.issuedData.length > 0 && (
                                              <div key={idx} className="space-y-1">
                                                 <p className="text-[9px] font-bold text-gray-400 uppercase">{item.name}</p>
-                                                <div className="flex flex-col gap-1">
-                                                   {item.issuedData.map((data, dIdx) => (
-                                                      <div key={dIdx} className="flex items-center justify-between bg-white p-3 rounded-xl border border-gray-100 shadow-sm">
-                                                         <code className="text-xs font-mono text-gray-700 break-all">{data}</code>
-                                                         <button 
-                                                            onClick={() => {
-                                                               navigator.clipboard.writeText(data);
-                                                               alert('Berhasil disalin!');
-                                                            }}
-                                                            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
-                                                         >
-                                                            <Copy className="w-3 h-3" />
-                                                         </button>
-                                                      </div>
-                                                   ))}
+                                                <div className="flex flex-col gap-2">
+                                                   {item.issuedData.map((data, dIdx) => {
+                                                      if (data.startsWith('SMM_ORDER:')) {
+                                                         return (
+                                                            <div key={dIdx} className="w-full">
+                                                               <SmmOrderTracker 
+                                                                  orderId={order.id}
+                                                                  rawStr={data}
+                                                                  username={order.username}
+                                                                  onUpdateBalance={(bal) => setAuth(prev => ({ ...prev, balance: bal }))}
+                                                                  onUpdateOrderData={async (newRawStr, updatedStoreStatus) => {
+                                                                     try {
+                                                                        const updatedItems = order.items.map(oItem => {
+                                                                           if (oItem.id === item.id) {
+                                                                              const updatedIssued = [...(oItem.issuedData || [])];
+                                                                              updatedIssued[dIdx] = newRawStr;
+                                                                              return { ...oItem, issuedData: updatedIssued };
+                                                                           }
+                                                                           return oItem;
+                                                                        });
+                                                                        const updatedOrder = { 
+                                                                           ...order, 
+                                                                           items: updatedItems,
+                                                                           status: updatedStoreStatus || order.status 
+                                                                        };
+                                                                        await ApiService.createOrder(updatedOrder, order.username);
+                                                                        setOrders(prev => prev.map(o => o.id === order.id ? updatedOrder : o));
+                                                                     } catch (e) {
+                                                                        console.error("Error saving updated SMM status:", e);
+                                                                     }
+                                                                  }}
+                                                               />
+                                                            </div>
+                                                         );
+                                                      }
+                                                      if (data.startsWith('JASAOTP_ORDER:')) {
+                                                         return (
+                                                            <div key={dIdx} className="w-full">
+                                                               <JasaOtpSmsRetriever 
+                                                                 orderId={order.id}
+                                                                 rawStr={data}
+                                                                 username={order.username}
+                                                                 refundAmount={order.totalAmount}
+                                                                 onUpdateOrderData={async (newRawStr) => {
+                                                                   try {
+                                                                     const updatedItems = order.items.map(oItem => {
+                                                                       if (oItem.id === item.id) {
+                                                                          const updatedIssued = [...(oItem.issuedData || [])];
+                                                                          updatedIssued[dIdx] = newRawStr;
+                                                                          return { ...oItem, issuedData: updatedIssued };
+                                                                       }
+                                                                       return oItem;
+                                                                     });
+                                                                     const updatedOrder = { ...order, items: updatedItems };
+                                                                     await ApiService.createOrder(updatedOrder, order.username);
+                                                                     setOrders(prev => prev.map(o => o.id === order.id ? updatedOrder : o));
+                                                                   } catch (e) {
+                                                                     console.error("Error saving updated JasaOTP status:", e);
+                                                                   }
+                                                                 }}
+                                                               />
+                                                            </div>
+                                                         );
+                                                      }
+                                                      return (
+                                                         <div key={dIdx} className="flex items-center justify-between bg-white p-3 rounded-xl border border-gray-100 shadow-sm">
+                                                            <code className="text-xs font-mono text-gray-700 break-all">{data}</code>
+                                                            <button 
+                                                               onClick={() => {
+                                                                  navigator.clipboard.writeText(data);
+                                                                  alert('Berhasil disalin!');
+                                                               }}
+                                                               className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+                                                            >
+                                                               <Copy className="w-3 h-3" />
+                                                            </button>
+                                                         </div>
+                                                      );
+                                                   })}
                                                 </div>
                                              </div>
                                           )
@@ -1408,84 +1823,87 @@ const App: React.FC = () => {
           )}
 
           {view === 'vouchers' && (
-             <div className="max-w-4xl mx-auto w-full p-6 space-y-8 animate-in slide-in-from-bottom-5 duration-500">
-                <div className="bg-white p-10 rounded-[3.5rem] border border-gray-100 shadow-sm relative overflow-hidden">
-                   <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-50/50 rounded-full -mr-32 -mt-32"></div>
-                   <div className="relative z-10">
-                      <h2 className="text-3xl font-black text-gray-900 tracking-tighter uppercase mb-2">Voucher & Promo</h2>
-                      <p className="text-gray-400 font-medium text-sm">Gunakan kode voucher di bawah ini untuk mendapatkan potongan harga spesial.</p>
+             <div className="max-w-3xl mx-auto w-full p-2 sm:p-4 lg:p-5 space-y-3.5 sm:space-y-4.5 animate-in slide-in-from-bottom-5 duration-500">
+                {/* Header Card */}
+                <div className="bg-white p-3.5 sm:p-4.5 rounded-xl border border-gray-100 shadow-xs relative overflow-hidden">
+                   <div className="absolute top-0 right-0 w-36 h-36 bg-gradient-to-br from-indigo-50/10 to-indigo-50/40 rounded-full -mr-18 -mt-18"></div>
+                   <div className="relative z-10 flex flex-col">
+                      <h2 className="text-[12px] sm:text-sm font-black text-gray-900 tracking-tight uppercase">Voucher & Promo</h2>
+                      <p className="text-gray-400 font-semibold text-[10px] sm:text-[11px] mt-0.5 max-w-md">Gunakan kode voucher di bawah ini untuk mendapatkan potongan harga spesial.</p>
                    </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                    {vouchers.filter(v => v.isActive && (!v.recipient || (auth.username && v.recipient.toLowerCase() === auth.username.toLowerCase()))).length === 0 ? (
-                      <div className="md:col-span-2 py-20 bg-white rounded-[3rem] border border-dashed border-gray-200 flex flex-col items-center justify-center text-center gap-4">
-                         <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-gray-300">
-                            <Tag className="w-8 h-8" />
+                      <div className="md:col-span-2 py-8 bg-indigo-50/5/10 rounded-xl border border-dashed border-indigo-100 flex flex-col items-center justify-center text-center gap-2">
+                         <div className="w-8 h-8 bg-gray-50/80 rounded-full flex items-center justify-center text-gray-450 border border-gray-100">
+                            <Tag className="w-4 h-4 text-gray-400" />
                          </div>
-                         <p className="text-sm font-black text-gray-400 uppercase tracking-widest">Belum ada promo tersedia</p>
+                         <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest leading-none">Belum ada promo tersedia</p>
                       </div>
                    ) : (
                       vouchers.filter(v => v.isActive && (!v.recipient || (auth.username && v.recipient.toLowerCase() === auth.username.toLowerCase()))).map(v => (
-                         <div key={v.id} className="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm relative group hover:shadow-xl hover:shadow-indigo-100/50 transition-all">
-                            <div className="flex justify-between items-start mb-6">
-                               <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl group-hover:bg-indigo-600 group-hover:text-white transition-colors">
-                                  <Tag className="w-6 h-6" />
+                         <div key={v.id} className="bg-white p-3 sm:p-4 rounded-xl border border-gray-150/60 shadow-xs relative group hover:shadow-xs transition-all duration-200">
+                            <div className="flex justify-between items-start mb-2.5">
+                               <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                                  <Tag className="w-3.5 h-3.5" />
                                </div>
                                <div className="text-right">
-                                  <span className="text-[10px] font-black text-indigo-500 uppercase tracking-widest">Potongan</span>
-                                  <p className="text-2xl font-black text-gray-900 leading-none">{formatIDR(v.amount)}</p>
+                                  <span className="text-[7px] font-bold text-indigo-500 uppercase tracking-wider block leading-none mb-0.5">Potongan</span>
+                                  <p className="text-sm font-black text-gray-900 leading-none">{formatIDR(v.amount)}</p>
                                </div>
                             </div>
                             
-                            <div className="space-y-4">
+                            <div className="space-y-2.5">
                                <div>
-                                  <h4 className="text-lg font-black text-gray-900 leading-none">{v.code}</h4>
+                                  <h4 className="text-[11px] sm:text-[12px] font-black text-gray-900 leading-none uppercase tracking-wide">{v.code}</h4>
                                   {v.minPurchase && v.minPurchase > 0 && (
-                                     <p className="text-[10px] font-bold text-gray-400 mt-2">Min. Pembelian {formatIDR(v.minPurchase)}</p>
+                                     <p className="text-[8px] font-semibold text-gray-400 mt-0.5 leading-none">Min. Blj {formatIDR(v.minPurchase)}</p>
                                   )}
                                </div>
 
-                               <div className="flex gap-2">
+                               <div className="flex gap-1">
                                   <button 
                                      onClick={() => {
                                         navigator.clipboard.writeText(v.code);
                                         alert("Kode voucher berhasil disalin!");
                                      }}
-                                     className="flex-1 py-3 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-xl font-black uppercase text-[10px] tracking-widest transition-all flex items-center justify-center gap-2"
+                                     className="flex-1 py-1 sm:py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-md font-black uppercase text-[8px] tracking-wider transition-all flex items-center justify-center gap-1"
                                   >
-                                     <Copy className="w-3.5 h-3.5" /> Salin Kode
+                                     <Copy className="w-2.5 h-2.5" /> Salin
                                   </button>
                                   <button 
                                      onClick={() => setView('home')}
-                                     className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all flex items-center justify-center gap-2"
+                                     className="px-3 py-1 sm:py-1.5 bg-indigo-600 text-white rounded-md font-black uppercase text-[8px] tracking-wider hover:bg-indigo-700 transition-all flex items-center justify-center gap-0.5"
                                   >
-                                     Gunakan <ChevronRight className="w-3.5 h-3.5" />
+                                     Pakai <ChevronRight className="w-2.5 h-2.5" />
                                   </button>
                                </div>
                             </div>
 
                             {/* Ticket Notch effect */}
-                            <div className="absolute top-1/2 -left-3 w-6 h-6 bg-[#f8fafc] rounded-full border border-gray-100 -translate-y-1/2"></div>
-                            <div className="absolute top-1/2 -right-3 w-6 h-6 bg-[#f8fafc] rounded-full border border-gray-100 -translate-y-1/2"></div>
+                            <div className="absolute top-1/2 -left-1.5 w-3 h-3 bg-[#f8fafc] rounded-full border border-gray-100/80 -translate-y-1/2"></div>
+                            <div className="absolute top-1/2 -right-1.5 w-3 h-3 bg-[#f8fafc] rounded-full border border-gray-100/80 -translate-y-1/2"></div>
                          </div>
                       ))
                    )}
                 </div>
                 
-                <div className="bg-indigo-600 p-10 rounded-[3rem] text-white overflow-hidden relative">
-                   <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full -mr-32 -mt-32"></div>
-                   <div className="relative z-10 flex flex-col md:flex-row items-center gap-8">
-                      <div className="p-5 bg-white/20 backdrop-blur-md rounded-[2rem]">
-                         <Sparkles className="w-10 h-10" />
+                {/* Reward Banner */}
+                <div className="bg-indigo-600 p-3.5 sm:p-4.5 rounded-xl text-white overflow-hidden relative shadow-xs">
+                   <div className="absolute top-0 right-0 w-36 h-36 bg-white/10 rounded-full -mr-18 -mt-18"></div>
+                   <div className="relative z-10 flex flex-col sm:flex-row items-center gap-3 text-center sm:text-left">
+                      <div className="p-1.5 bg-white/20 backdrop-blur-md rounded-lg">
+                         <Sparkles className="w-4 h-4 text-white" />
                       </div>
-                      <div className="text-center md:text-left flex-1">
-                         <h3 className="text-xl font-black uppercase tracking-tight mb-1">Dapatkan Lebih Banyak Reward!</h3>
-                         <p className="text-white/70 text-sm font-medium">Lakukan transaksi minimal 10 kali menggunakan Saldo MW-Wallet untuk mendapatkan bonus voucher saldo otomatis.</p>
+                      <div className="flex-1">
+                         <h3 className="text-[11px] sm:text-xs font-black uppercase tracking-wider mb-0.5">Dapatkan Lebih Banyak Reward!</h3>
+                         <p className="text-white/80 text-[9.5px] font-medium leading-snug">Lakukan transaksi minimal 10 kali menggunakan Saldo MW-Wallet untuk mendapatkan bonus voucher saldo otomatis.</p>
                       </div>
                       <button 
                          onClick={() => setView('topup')}
-                         className="px-8 py-4 bg-white text-indigo-600 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-indigo-50 transition-all active:scale-95"
+                         className="w-full sm:w-auto px-3.5 py-1.5 bg-white text-indigo-600 rounded-md font-black uppercase text-[8px] tracking-wider hover:bg-indigo-50 transition-all active:scale-95"
                       >
                          Top Up Sekarang
                       </button>
@@ -1539,25 +1957,27 @@ const App: React.FC = () => {
         </motion.button>
       )}
       
-      <footer className="bg-white border-t py-20 mt-20">
-        <div className="max-w-7xl mx-auto px-4 text-center">
-          <div className="flex items-center justify-center gap-2 mb-8">
-            <img src="https://i.imgur.com/oR61kTA.png" className="w-10 h-10 object-contain" alt="MWSTORE Logo" />
-            <span className="text-2xl font-black text-gray-900 tracking-tighter">MWSTORE</span>
+      <footer className="bg-white border-t py-6 mt-8">
+        <div className="max-w-5xl mx-auto px-4 text-center">
+          <div className="flex items-center justify-center gap-1.5 mb-2.5">
+            <img src="https://i.imgur.com/oR61kTA.png" className="w-5 h-5 object-contain" alt="MWSTORE Logo" />
+            <span className="text-sm font-extrabold text-gray-900 tracking-tighter">MWSTORE</span>
           </div>
-          <p className="text-gray-400 text-[10px] font-black uppercase tracking-[0.4em] mb-12">Official MW-Store Enabled Commerce</p>
-          <div className="flex flex-wrap justify-center gap-4">
-             <button className="flex items-center gap-2 px-8 py-4 bg-gray-50 rounded-2xl text-[10px] font-black uppercase tracking-widest text-gray-600 border border-gray-100 hover:bg-white transition-all">
-                <Download className="w-4 h-4" />
+          <p className="text-gray-400 text-[7px] font-bold uppercase tracking-[0.25em] mb-4">
+            Official MW-Store Enabled Commerce
+          </p>
+          <div className="flex flex-wrap justify-center gap-2">
+             <button className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gray-50 hover:bg-gray-100 rounded-lg text-[8px] font-black uppercase tracking-widest text-gray-600 border border-gray-100 transition-all active:scale-95">
+                <Download className="w-3 h-3" />
                 Dapatkan App
              </button>
-             <a href="https://wa.me/6283845890648" target="_blank" className="flex items-center gap-2 px-8 py-4 bg-green-50 rounded-2xl text-[10px] font-black uppercase tracking-widest text-green-600 border border-green-100 hover:bg-white transition-all">
-                <MessageCircle className="w-4 h-4" />
+             <a href="https://wa.me/6283845890648" target="_blank" className="flex items-center gap-1.5 px-3.5 py-1.5 bg-green-50/70 hover:bg-green-100/70 rounded-lg text-[8px] font-black uppercase tracking-widest text-green-600 border border-green-100/30 transition-all active:scale-95">
+                <MessageCircle className="w-3 h-3" />
                 Customer Service
              </a>
           </div>
-          <div className="mt-20 pt-10 border-t border-gray-50 text-[9px] font-black text-gray-300 uppercase tracking-widest">
-             <p>© MWSTORE OFFICIAL - PERDAGANGAN PRODUK DIGITAL</p>
+          <div className="mt-6 pt-4 border-t border-gray-50 text-[7px] font-bold text-gray-400 uppercase tracking-widest">
+             <p>© MWSTORE OFFICIAL - PERDAGANGAN PRODUK DIGITAL </p>
           </div>
         </div>
       </footer>

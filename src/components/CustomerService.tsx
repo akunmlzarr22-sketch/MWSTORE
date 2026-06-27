@@ -3,7 +3,7 @@ import { MessageCircle, Send, User, ShieldCheck, Clock, X, Image as ImageIcon, L
 import { Message } from '@/types';
 import { ApiService, safeParseDate } from '@/services/apiService';
 import { motion, AnimatePresence } from 'motion/react';
-import { compressImage } from '@/lib/imageUtils';
+import { compressImage, uploadToFirebaseStorage } from '@/lib/imageUtils';
 
 interface CustomerServiceProps {
   username: string;
@@ -78,10 +78,11 @@ const CustomerService: React.FC<CustomerServiceProps> = ({ username, onBack }) =
       try {
         const base64 = event.target?.result as string;
         const compressed = await compressImage(base64);
-        await handleSendMessage(undefined, compressed);
+        const storageUrl = await uploadToFirebaseStorage(compressed, 'customer-service-chats');
+        await handleSendMessage(undefined, storageUrl);
       } catch (error) {
-        console.error("Compression error:", error);
-        alert("Gagal memproses gambar.");
+        console.error("Compression/Upload error:", error);
+        alert("Gagal memproses atau mengunggah gambar.");
       } finally {
         setIsUploading(false);
         if (fileInputRef.current) fileInputRef.current.value = '';

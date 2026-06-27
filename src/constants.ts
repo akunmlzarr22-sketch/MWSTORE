@@ -141,6 +141,30 @@ export const MOCK_PRODUCTS: Product[] = [
     stock: 3,
     productType: 'Unik',
     inventory: ['NF-EMAIL1:PASS1', 'NF-EMAIL2:PASS2', 'NF-EMAIL3:PASS3']
+  },
+  {
+    id: 'nokos-wa-1',
+    name: 'Nokos WhatsApp ID (OTP)',
+    description: 'Nomor virtual Indonesia khusus verifikasi OTP WhatsApp. Garansi berhasil.',
+    price: 8500,
+    category: 'Nokos',
+    image: 'https://images.unsplash.com/photo-1563986768609-322da13575f3?q=80&w=600&h=400&auto=format&fit=crop',
+    rating: 4.9,
+    stock: 150,
+    productType: 'Duplikat',
+    inventory: ['KIRIM_OTOMATIS']
+  },
+  {
+    id: 'nokos-tg-1',
+    name: 'Nokos Telegram ID (OTP)',
+    description: 'Nomor virtual Indonesia khusus verifikasi OTP Telegram. Proses instan.',
+    price: 6500,
+    category: 'Nokos',
+    image: 'https://images.unsplash.com/photo-1614680376593-902f74cf0d41?q=80&w=600&h=400&auto=format&fit=crop',
+    rating: 4.8,
+    stock: 220,
+    productType: 'Duplikat',
+    inventory: ['KIRIM_OTOMATIS']
   }
 ];
 

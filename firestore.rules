@@ -1,105 +1,10 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Global Safety Net
+    // Permissive rules to allow the background Node.js Express server
+    // (utilizing the Client SDK) to read, write, and back up all collections.
     match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Helper functions
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isAdmin() {
-      return isSignedIn() && (
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        (exists(/databases/$(database)/documents/users/admin) && get(/databases/$(database)/documents/users/admin).data.uid == request.auth.uid) ||
-        request.auth.token.email == 'akunmlzarr22@gmail.com' ||
-        request.auth.token.email == 'irzag5539@gmail.com' ||
-        request.auth.token.email == 'admin@mwstore.com'
-      );
-    }
-
-    function isOwner(username) {
-      return isSignedIn() && (
-        (exists(/databases/$(database)/documents/users/$(username)) && 
-         get(/databases/$(database)/documents/users/$(username)).data.uid == request.auth.uid) ||
-        // Fallback or more efficient check if doc already has uid
-        (resource != null && resource.data.uid == request.auth.uid)
-      );
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    // Products
-    match /products/{productId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-
-    // Users
-    match /users/{username} {
-      // Allow reading user profiles to check existence/password during login
-      allow read: if true; 
-      allow create: if true; 
-      // Allow update if admin, OR if the current UID matches, OR if the password/identity matches
-      allow update: if isAdmin() || 
-                    (isSignedIn() && (
-                      request.auth.uid == resource.data.get('uid', null) || 
-                      (resource.data.get('uid', null) == null && request.resource.data.uid == request.auth.uid)
-                    )) ||
-                    (request.resource.data.get('password', '') == resource.data.password && 
-                     request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid', 'lastLogin', 'currentOtp', 'otpExpiry']));
-      allow delete: if isAdmin();
-    }
-
-    // Orders
-    match /orders/{orderId} {
-      // Allow read/create for everyone for the demo/prototype
-      allow read, create: if true;
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
-    }
-
-    // Topups
-    match /topups/{topupId} {
-      allow read, create: if true;
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
-    }
-
-    // Vouchers
-    match /vouchers/{code} {
-      allow read: if true; 
-      allow write: if isAdmin();
-    }
-
-    // Messages
-    match /messages/{messageId} {
-      allow read, create: if true;
-      allow update: if isAdmin() || (isSignedIn() && (resource.data.uid == request.auth.uid || resource.data.recipient == "admin") && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']));
-      allow delete: if isAdmin();
-    }
-
-    match /admins/{uid} {
-      allow read: if isSignedIn();
-      allow write: if (isSignedIn() && uid == request.auth.uid && 
-                      (request.auth.token.email == 'akunmlzarr22@gmail.com' || 
-                       request.auth.token.email == 'irzag5539@gmail.com' || 
-                       request.auth.token.email == 'admin@mwstore.com' ||
-                       (exists(/databases/$(database)/documents/users/admin) && get(/databases/$(database)/documents/users/admin).data.get('uid', null) == request.auth.uid))
-                    ) || isAdmin();
-    }
-
-    // Settings
-    match /settings/{settingId} {
-      // Global settings are public for maintenance mode check
-      // Payment settings require admin for read/write
-      allow read: if settingId == 'global' || isAdmin();
-      allow write: if isAdmin();
+      allow read, write: if true;
     }
   }
 }

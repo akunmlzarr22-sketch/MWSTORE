@@ -25,6 +25,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [forgotPasswordUsername, setForgotPasswordUsername] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -120,7 +121,8 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
           setError('Username sudah terdaftar!');
         }
       } else if (mode === 'forgot') {
-        const user = registeredUsers.find(u => 
+        const allUsers = await ApiService.getUsers();
+        const user = allUsers.find(u => 
           u.phone === phone || 
           (u.email && u.email.toLowerCase() === phone.toLowerCase())
         );
@@ -135,6 +137,9 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
             const updatedUser = { ...user, currentOtp: newOtp, otpExpiry: expiry };
             await ApiService.saveUser(updatedUser, user.username);
             
+            // Also store the username in our component state
+            setForgotPasswordUsername(user.username);
+            
             // Redirect to WhatsApp
             const message = window.encodeURIComponent(`Halo Admin, saya ingin meminta kode OTP untuk reset password.\n\nUsername: ${user.username}\nWA/Email: ${phone}`);
             window.open(`https://wa.me/${APP_CONFIG.admin.whatsapp}?text=${message}`, '_blank');
@@ -146,20 +151,27 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
           }
         } else {
           // Verify OTP phase
-          if (user && user.currentOtp === otp) {
+          // Sync with server first to make sure we have the latest written values
+          await ApiService.syncFromServer();
+          
+          // Get the absolute fresh user record directly from storage ApiService
+          const freshUser = await ApiService.getUser(forgotPasswordUsername || (user ? user.username : ''));
+          
+          if (freshUser && freshUser.currentOtp === otp) {
             const now = new Date();
-            const expiry = user.otpExpiry ? new Date(user.otpExpiry) : new Date(0);
+            const expiry = freshUser.otpExpiry ? new Date(freshUser.otpExpiry) : new Date(0);
             
             if (now < expiry) {
-              // Explicitly set OTP fields to null to ensure they are cleared in Firestore with merge:true
               const finalUser = { 
-                ...user, 
+                ...freshUser, 
                 password: newPassword,
                 currentOtp: null,
                 otpExpiry: null
               };
               
-              await ApiService.saveUser(finalUser, user.username);
+              await ApiService.saveUser(finalUser, freshUser.username);
+              // Run immediate sync back to server
+              await ApiService.syncFromServer();
               
               alert('Password berhasil diperbarui! Silakan login kembali.');
               setMode('login');
@@ -167,6 +179,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onRegister, registeredUsers }) =
               setOtp('');
               setIsOtpSent(false);
               setNewPassword('');
+              setForgotPasswordUsername('');
             } else {
               setError('Kode OTP sudah kadaluarsa (5 menit). Silakan minta lagi.');
               setIsOtpSent(false);

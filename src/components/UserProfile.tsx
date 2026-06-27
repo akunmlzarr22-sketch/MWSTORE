@@ -1,10 +1,11 @@
 
 import React, { useState, useEffect } from 'react';
-import { User, Mail, Smartphone, Lock, Save, ArrowLeft, ShieldCheck, Eye, EyeOff, Loader2 } from 'lucide-react';
+import { User, Mail, Smartphone, Lock, Save, ArrowLeft, ShieldCheck, Eye, EyeOff, Loader2, Clock, Wallet, CheckCircle2, AlertCircle } from 'lucide-react';
 import { motion } from 'motion/react';
-import { UserAccount } from '@/types';
+import { UserAccount, TopUpTransaction } from '@/types';
 import { ApiService } from '@/services/apiService';
 import { auth as firebaseAuth } from '@/lib/firebase';
+import { formatIDR } from '@/constants';
 
 interface UserProfileProps {
   username: string;
@@ -14,6 +15,7 @@ interface UserProfileProps {
 
 const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onUpdate }) => {
   const [user, setUser] = useState<UserAccount | null>(null);
+  const [topups, setTopups] = useState<TopUpTransaction[]>([]);
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [isSaving, setIsSaving] = useState(false);
@@ -21,7 +23,6 @@ const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onUpdate })
 
   useEffect(() => {
     const fetchUser = async () => {
-      // Use username prop as lookup key (local or Firebase)
       const currentUser = await ApiService.getUser(username);
       if (currentUser) {
         setUser(currentUser);
@@ -30,6 +31,12 @@ const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onUpdate })
       }
     };
     fetchUser();
+    
+    const unsub = ApiService.listenToTopUps(username, false, (fetchedTopups) => {
+      setTopups(fetchedTopups);
+    });
+    
+    return () => unsub();
   }, [username]);
 
   const handleSave = async () => {
@@ -164,6 +171,56 @@ const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onUpdate })
               <span className="text-[10px] font-bold text-green-600 uppercase">Enskripsi AES</span>
            </div>
         </div>
+      </div>
+
+      <div className="mt-12 space-y-6">
+        <div className="flex items-center justify-between px-4">
+          <h3 className="text-xl font-black text-gray-900 uppercase tracking-tight flex items-center gap-3">
+             <Clock className="w-5 h-5 text-blue-600" />
+             Riwayat Top Up
+          </h3>
+        </div>
+
+        {topups.length === 0 ? (
+          <div className="bg-white p-12 rounded-[2.5rem] border border-gray-100 text-center shadow-sm">
+             <p className="text-gray-400 font-bold uppercase tracking-widest text-[10px]">Belum ada transaksi top up</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {topups.map((t) => (
+              <motion.div 
+                key={t.id}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm flex items-center justify-between group hover:border-blue-100 transition-all"
+              >
+                <div className="flex items-center gap-4">
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${
+                    t.status === 'Selesai' ? 'bg-green-50 text-green-600' : 
+                    t.status === 'Gagal' ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600'
+                  }`}>
+                    <Wallet className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-black text-gray-900 mb-0.5">{formatIDR(t.amount)}</p>
+                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-tighter">
+                      ID: {t.id} • {t.date}
+                    </p>
+                  </div>
+                </div>
+                
+                <div className={`px-4 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center gap-2 ${
+                  t.status === 'Selesai' ? 'bg-green-100 text-green-600' : 
+                  t.status === 'Gagal' ? 'bg-red-100 text-red-600' : 'bg-orange-100 text-orange-600'
+                }`}>
+                  {t.status === 'Selesai' ? <CheckCircle2 className="w-3 h-3" /> : 
+                   t.status === 'Gagal' ? <AlertCircle className="w-3 h-3" /> : <Clock className="w-3 h-3 animate-pulse" />}
+                  {t.status === 'Selesai' ? 'Selesai' : t.status === 'Gagal' ? 'Gagal' : 'Proses'}
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

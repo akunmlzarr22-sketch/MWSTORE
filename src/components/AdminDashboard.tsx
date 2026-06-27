@@ -1,12 +1,12 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { Package, Search, TrendingUp, DollarSign, ArrowLeft, Plus, X, Image as ImageIcon, Tag, Trash2, LayoutDashboard, ShoppingBasket, Wallet, RefreshCw, Smartphone, Users, User, Eye, EyeOff, ShieldCheck, AlertCircle, Settings, Mail, MessageCircle, LayoutGrid, Coins, ArrowUpRight, ArrowDownLeft, Clock, Copy, Check, CheckCircle, Menu, LogOut, Loader2 } from 'lucide-react';
+import { Package, Search, TrendingUp, DollarSign, ArrowLeft, Plus, X, Image as ImageIcon, Tag, Trash2, LayoutDashboard, ShoppingBasket, Wallet, RefreshCw, Smartphone, Users, User, Eye, EyeOff, ShieldCheck, AlertCircle, Settings, Mail, MessageCircle, LayoutGrid, Coins, ArrowUpRight, ArrowDownLeft, Clock, Copy, Check, CheckCircle, Menu, LogOut, Loader2, Globe } from 'lucide-react';
 import { formatIDR } from '@/constants';
 import { Order, Product, UserAccount, TopUpTransaction, Message, Voucher, PaymentSettings, PaymentGatewayConfig } from '@/types';
 import { APP_CONFIG } from '@/config';
 import { ApiService, safeParseDate } from '@/services/apiService';
-import { compressImage } from '@/lib/imageUtils';
+import { compressImage, uploadToFirebaseStorage } from '@/lib/imageUtils';
 import CommunityChat from '@/components/CommunityChat';
 
 interface AdminDashboardProps {
@@ -88,6 +88,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   });
   const [newAdminMessage, setNewAdminMessage] = useState('');
   const [isUploadingChat, setIsUploadingChat] = useState(false);
+  const [isUploadingProduct, setIsUploadingProduct] = useState(false);
   const adminChatFileInputRef = useRef<HTMLInputElement>(null);
   const adminChatEndRef = useRef<HTMLDivElement>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -95,11 +96,93 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [isMaintenance, setIsMaintenance] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [activeMenus, setActiveMenusState] = useState<Record<string, boolean>>({
+    nokos: true,
+    game: true,
+    pulsa: true,
+    ewallet: true,
+    voucher: true
+  });
+  const [nokosSettings, setNokosSettingsState] = useState({
+    provider: 'SMSHub',
+    apiKey: '',
+    baseUrl: 'https://smshub.org/api',
+    isActive: false
+  });
+  const [isSavingNokos, setIsSavingNokos] = useState(false);
+  const [showNokosApiKey, setShowNokosApiKey] = useState(false);
+  const [jasaOtpBalance, setJasaOtpBalance] = useState<number | null>(null);
+  const [isCheckingJasaOtpBalance, setIsCheckingJasaOtpBalance] = useState(false);
+
+  const [smmSettings, setSmmSettingsState] = useState({
+    provider: 'Pipzpedia SMM',
+    apiKey: '',
+    baseUrl: 'https://pipzpedia.my.id/api/v2',
+    isActive: false,
+    markupPercent: 50,
+    markupFlat: 0
+  });
+  const [isSavingSmm, setIsSavingSmm] = useState(false);
+  const [showSmmApiKey, setShowSmmApiKey] = useState(false);
+  const [smmProviderBalance, setSmmProviderBalance] = useState<string | null>(null);
+  const [isCheckingSmmBalance, setIsCheckingSmmBalance] = useState(false);
+
+  const handleCheckSmmBalance = async () => {
+    try {
+      setIsCheckingSmmBalance(true);
+      const res = await fetch('/api/smm/balance', { method: 'POST' });
+      const data = await res.json();
+      if (data && data.balance !== undefined) {
+        setSmmProviderBalance(data.balance);
+      } else {
+        alert(`Gagal memeriksa saldo SMM: ${data.error || 'Periksa kembali API Key Anda.'}`);
+      }
+    } catch (e: any) {
+      console.error(e);
+      alert("Gagal memeriksa saldo SMM: " + e.message);
+    } finally {
+      setIsCheckingSmmBalance(false);
+    }
+  };
+
+  const handleCheckJasaOtpBalance = async () => {
+    try {
+      setIsCheckingJasaOtpBalance(true);
+      const res = await fetch('/api/nokos/balance');
+      const data = await res.json();
+      if (data && data.success && data.data && data.data.saldo !== undefined) {
+        setJasaOtpBalance(data.data.saldo);
+      } else {
+        alert(`Gagal memeriksa saldo JasaOTP.id: ${data.message || data.error || 'Periksa kembali API Key Anda.'}`);
+      }
+    } catch (e: any) {
+      console.error(e);
+      alert("Gagal memeriksa saldo JasaOTP.id: " + e.message);
+    } finally {
+      setIsCheckingJasaOtpBalance(false);
+    }
+  };
 
   useEffect(() => {
     const unsubMaintenance = ApiService.listenToSettings((settings) => {
       if (settings && settings.maintenanceMode !== undefined) {
         setIsMaintenance(settings.maintenanceMode);
+      }
+      if (settings && settings.activeMenus) {
+        setActiveMenusState(settings.activeMenus);
+      }
+      if (settings && settings.nokosSettings) {
+        setNokosSettingsState(settings.nokosSettings);
+      }
+      if (settings && settings.smmSettings) {
+        setSmmSettingsState({
+          provider: settings.smmSettings.provider || 'Pipzpedia SMM',
+          apiKey: settings.smmSettings.apiKey || '',
+          baseUrl: settings.smmSettings.baseUrl || 'https://pipzpedia.my.id/api/v2',
+          isActive: !!settings.smmSettings.isActive,
+          markupPercent: settings.smmSettings.markupPercent !== undefined ? Number(settings.smmSettings.markupPercent) : 50,
+          markupFlat: settings.smmSettings.markupFlat !== undefined ? Number(settings.smmSettings.markupFlat) : 0
+        });
       }
     });
 
@@ -135,6 +218,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         console.log(`AdminDashboard: Fetching payment settings (attempt ${retryCount + 1})...`);
         const settings = await ApiService.getPaymentSettings();
         if (settings) {
+          // Check if SanPay exists, if not add it
+          const hasSanPay = settings.gateways.some(g => g.provider === 'SanPay');
+          if (!hasSanPay) {
+             settings.gateways.push({ provider: 'SanPay', merchantCode: '', apiKey: '', privateKey: '', baseUrl: '', isActive: false, mode: 'Production', slug: '' });
+          }
+          // Check if ZannPay exists, if not add it
+          const hasZannPay = settings.gateways.some(g => g.provider === 'ZannPay');
+          if (!hasZannPay) {
+             settings.gateways.push({ provider: 'ZannPay', merchantCode: '', apiKey: '', privateKey: '', baseUrl: '', isActive: false, mode: 'Production', slug: '' });
+          }
           setPaymentSettings(settings);
           setPaymentError(null);
         } else {
@@ -148,6 +241,8 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 id: 'payment',
                 gateways: [
                   { provider: 'Pak Kasir', merchantCode: '', apiKey: '', privateKey: '', baseUrl: '', isActive: false, mode: 'Production', slug: '' },
+                  { provider: 'SanPay', merchantCode: '', apiKey: '', privateKey: '', baseUrl: '', isActive: false, mode: 'Production', slug: '' },
+                  { provider: 'ZannPay', merchantCode: '', apiKey: '', privateKey: '', baseUrl: '', isActive: false, mode: 'Production', slug: '' },
                   { provider: 'Manual', merchantCode: '', apiKey: '', privateKey: '', baseUrl: '', isActive: true, mode: 'Production', slug: '' }
                 ],
                 updatedAt: new Date().toISOString(),
@@ -249,10 +344,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       try {
         const base64 = event.target?.result as string;
         const compressed = await compressImage(base64);
-        await handleSendAdminReply(undefined, compressed);
+        const storageUrl = await uploadToFirebaseStorage(compressed, 'admin-chats');
+        await handleSendAdminReply(undefined, storageUrl);
       } catch (error) {
-        console.error("Compression error:", error);
-        alert("Gagal memproses gambar.");
+        console.error("Compression/Upload error:", error);
+        alert("Gagal memproses atau mengunggah gambar.");
       } finally {
         setIsUploadingChat(false);
         if (adminChatFileInputRef.current) adminChatFileInputRef.current.value = '';
@@ -280,6 +376,41 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     await ApiService.setMaintenanceMode(newState);
   };
 
+  const handleToggleMenu = async (menuKey: string) => {
+    const updated = {
+      ...activeMenus,
+      [menuKey]: !activeMenus[menuKey]
+    };
+    setActiveMenusState(updated);
+    await ApiService.setActiveMenus(updated);
+  };
+
+  const handleSaveNokosSettings = async () => {
+    try {
+      setIsSavingNokos(true);
+      await ApiService.setNokosSettings(nokosSettings);
+      alert("Config API Nokos berhasil disimpan!");
+    } catch (e) {
+      console.error(e);
+      alert("Gagal menyimpan konfigurasi API Nokos.");
+    } finally {
+      setIsSavingNokos(false);
+    }
+  };
+
+  const handleSaveSmmSettings = async () => {
+    try {
+      setIsSavingSmm(true);
+      await ApiService.setSmmSettings(smmSettings);
+      alert("Konfigurasi API SMM Pipzpedia berhasil disimpan!");
+    } catch (e) {
+      console.error(e);
+      alert("Gagal menyimpan konfigurasi API SMM.");
+    } finally {
+      setIsSavingSmm(false);
+    }
+  };
+
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -295,7 +426,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
     stock: '',
     discount: '0',
     productType: 'Duplikat' as 'Duplikat' | 'Unik',
-    inventory: [''] as string[]
+    inventory: [''] as string[],
+    isNokosApi: false,
+    nokosCountry: '6',
+    nokosService: 'wa',
+    nokosOperator: 'any'
   });
 
   const [balanceAdjustments, setBalanceAdjustments] = useState<Record<string, string>>({});
@@ -322,6 +457,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
     const success = await ApiService.updateBalanceByUsername(username, current + finalAmount);
     if (success) {
+      // Force sync from server to ensure we have the absolute latest state
+      await ApiService.syncFromServer();
+      
       // Catat sebagai Top Up / Adjustment
       await ApiService.createTopUp({
         id: `ADJ-${Math.random().toString(36).substring(7).toUpperCase()}`,
@@ -332,19 +470,78 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }, username); 
       
       setBalanceAdjustments(prev => ({ ...prev, [username]: '' }));
-      alert(`Berhasil ${isAddition ? 'menambah' : 'mengurangi'} saldo ${username}.`);
+      alert(`Berhasil ${isAddition ? 'menambah' : 'mengurangi'} saldo ${username}. Saldo terbaru telah disinkronkan dari server.`);
+    }
+  };
+
+  const [simulationData, setSimulationData] = useState({
+    order_id: '',
+    amount: '10000',
+    status: 'completed'
+  });
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
+
+  const fetchWebhookLogs = async () => {
+    try {
+      const response = await fetch('/api/logs');
+      if (response.ok) {
+        const data = await response.json();
+        setWebhookLogs(data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch logs", e);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'settings') {
+      fetchWebhookLogs();
+      const interval = setInterval(fetchWebhookLogs, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab]);
+
+  const handleSimulateWebhook = async () => {
+    if (!simulationData.order_id) {
+        alert("Masukkan Order ID yang ingin disimulasikan");
+        return;
+    }
+    
+    setIsSimulating(true);
+    try {
+        const response = await fetch('/api/webhook/pakkasir', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                order_id: simulationData.order_id,
+                amount: Number(simulationData.amount),
+                status: simulationData.status
+            })
+        });
+        const result = await response.json();
+        if (result.success) {
+            alert("Simulasi Berhasil! Server telah memproses webhook.\n\n" + result.message);
+            await ApiService.syncFromServer();
+        } else {
+            alert("Simulasi Gagal: " + result.message);
+        }
+    } catch (e) {
+        alert("Kesalahan saat simulasi: " + String(e));
+    } finally {
+        setIsSimulating(false);
     }
   };
 
   const handleApproveTopUp = async (topup: TopUpTransaction) => {
     if (confirm(`Setujui Top Up sebesar ${formatIDR(topup.amount)} untuk ${topup.username}?`)) {
-      const user = users.find(u => u.username === topup.username);
+      const user = users.find(u => u.username?.toLowerCase() === topup.username?.toLowerCase());
       if (!user) {
         alert("User tidak ditemukan di database!");
         return;
       }
       const currentBalance = user.balance || 0;
-      const success = await ApiService.updateBalanceByUsername(topup.username, currentBalance + topup.amount);
+      const success = await ApiService.updateBalanceByUsername(user.username, currentBalance + topup.amount);
       
       if (success) {
         await ApiService.updateTopUpStatus(topup.id!, 'Selesai');
@@ -489,6 +686,43 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleSavePaymentSettings = async () => {
     if (!paymentSettings) return;
+
+    // Integrity for SanPay: Check for unique and valid SanPay link
+    const sanPay = paymentSettings.gateways.find(g => g.provider === 'SanPay');
+    if (sanPay && sanPay.isActive) {
+      if (!sanPay.baseUrl || !sanPay.baseUrl.startsWith('http')) {
+        alert("SanPay Gagal: Anda harus memasukkan Link SanPay yang valid (dimulai dengan http/https)");
+        return;
+      }
+      
+      // BukaOlshop mid check
+      if (sanPay.baseUrl.includes('bukaolshop') || sanPay.baseUrl.includes('sanpay.id')) {
+        if (!sanPay.baseUrl.includes('mid=')) {
+          alert("SanPay Peringatan: Link Anda terdeteksi menggunakan BukaOlshop/SanPay tetapi tidak memiliki parameter 'mid'. Link mungkin tidak bekerja jika 'mid' tidak disertakan.");
+          // We allow saving but warn them.
+        }
+      }
+      
+      // Basic check for uniqueness/validity as requested
+      if (sanPay.baseUrl.length < 15) {
+        alert("SanPay Gagal: Link SanPay terlalu pendek, masukkan link unik lengkap Anda.");
+        return;
+      }
+    }
+
+    // Integrity for ZannPay
+    const zannPay = paymentSettings.gateways.find(g => g.provider === 'ZannPay');
+    if (zannPay && zannPay.isActive) {
+      if (!zannPay.baseUrl || !zannPay.baseUrl.startsWith('http')) {
+        alert("ZannPay Gagal: Anda harus memasukkan Link pay.zannstore yang valid (dimulai dengan http/https)");
+        return;
+      }
+      if (zannPay.baseUrl.length < 10) {
+         alert("ZannPay Gagal: Link ZannPay tidak valid.");
+         return;
+      }
+    }
+
     setIsSavingPayment(true);
     await ApiService.savePaymentSettings(paymentSettings);
     setIsSavingPayment(false);
@@ -529,7 +763,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       stock: product.stock.toString(),
       discount: (product.discount || 0).toString(),
       productType: (product.productType || 'Duplikat') as 'Duplikat' | 'Unik',
-      inventory: product.inventory?.length ? [...product.inventory] : ['']
+      inventory: product.inventory?.length ? [...product.inventory] : [''],
+      isNokosApi: !!product.isNokosApi,
+      nokosCountry: product.nokosCountry || '6',
+      nokosService: product.nokosService || 'wa',
+      nokosOperator: product.nokosOperator || 'any'
     });
     setShowAddModal(true);
   };
@@ -545,7 +783,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
       stock: '',
       discount: '0',
       productType: 'Duplikat',
-      inventory: ['']
+      inventory: [''],
+      isNokosApi: false,
+      nokosCountry: '6',
+      nokosService: 'wa',
+      nokosOperator: 'any'
     });
     setShowAddModal(false);
   };
@@ -569,7 +811,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
           stock: newProduct.productType === 'Unik' ? newProduct.inventory.filter(i => i.trim()).length : Number(newProduct.stock),
           discount: Number(newProduct.discount),
           productType: (newProduct.productType || 'Duplikat') as 'Duplikat' | 'Unik',
-          inventory: newProduct.inventory.filter(i => i.trim())
+          inventory: newProduct.inventory.filter(i => i.trim()),
+          isNokosApi: newProduct.isNokosApi,
+          nokosCountry: newProduct.nokosCountry,
+          nokosService: newProduct.nokosService,
+          nokosOperator: newProduct.nokosOperator
         };
         await onAddProduct(updatedProduct); 
         setEditingProduct(null);
@@ -586,7 +832,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
           stock: newProduct.productType === 'Unik' ? newProduct.inventory.filter(i => i.trim()).length : (Number(newProduct.stock) || 10),
           discount: Number(newProduct.discount),
           productType: (newProduct.productType || 'Duplikat') as 'Duplikat' | 'Unik',
-          inventory: newProduct.inventory.filter(i => i.trim())
+          inventory: newProduct.inventory.filter(i => i.trim()),
+          isNokosApi: newProduct.isNokosApi,
+          nokosCountry: newProduct.nokosCountry,
+          nokosService: newProduct.nokosService,
+          nokosOperator: newProduct.nokosOperator
         };
         await onAddProduct(product);
         alert("Produk berhasil ditambahkan!");
@@ -600,7 +850,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
         stock: '',
         discount: '0',
         productType: 'Duplikat',
-        inventory: ['']
+        inventory: [''],
+        isNokosApi: false,
+        nokosCountry: '6',
+        nokosService: 'wa',
+        nokosOperator: 'any'
       });
       setShowAddModal(false);
     } catch (error) {
@@ -1296,7 +1550,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${gateway.isActive ? 'translate-x-6' : 'translate-x-1'}`} />
                             </button>
                          </div>
-                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                             <div className="space-y-2">
                                <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">URL Slug / ID Toko Pak Kasir</label>
                                <input 
@@ -1304,6 +1558,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                  value={gateway.slug || ''}
                                  onChange={(e) => updateGatewayConfig(gateway.provider, { slug: e.target.value })}
                                  placeholder="Contoh: toko-saya"
+                                 className="w-full bg-white border-2 border-gray-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-bold text-gray-900 transition-all shadow-sm"
+                               />
+                            </div>
+                            <div className="space-y-2">
+                               <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Base URL Gateway</label>
+                               <input 
+                                 type="text"
+                                 value={gateway.baseUrl || 'https://app.pakasir.com'}
+                                 onChange={(e) => updateGatewayConfig(gateway.provider, { baseUrl: e.target.value })}
+                                 placeholder="https://app.pakasir.com"
                                  className="w-full bg-white border-2 border-gray-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-bold text-gray-900 transition-all shadow-sm"
                                />
                             </div>
@@ -1330,12 +1594,257 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                    alert("Webhook URL disalin!");
                                  }}
                                />
+                               <p className="text-[10px] text-blue-400 mt-2 italic px-2">
+                                 * Gunakan URL di atas untuk integrasi Webhook di member.pakkasir.com
+                                </p>
+                            </div>
+                            <div className="md:col-span-3 mt-4">
+                               <div className="p-6 bg-amber-50 border-2 border-amber-100 rounded-[2.5rem]">
+                                  <h4 className="text-sm font-black text-amber-800 mb-4 flex items-center gap-2 uppercase tracking-tighter">
+                                     <ShieldCheck className="w-5 h-5" />
+                                     Simulasi Webhook (Test Integrasi)
+                                  </h4>
+                                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                                     <div className="md:col-span-2">
+                                        <label className="text-[10px] font-bold text-amber-600 uppercase tracking-widest block mb-1.5 ml-1">Order ID / Topup ID</label>
+                                        <input 
+                                          type="text"
+                                          placeholder="Contoh: TOPUP-123..."
+                                          value={simulationData.order_id}
+                                          onChange={(e) => setSimulationData({...simulationData, order_id: e.target.value})}
+                                          className="w-full bg-white border-2 border-amber-200 rounded-2xl py-3 px-5 text-sm text-amber-900 outline-none focus:border-amber-400 font-bold"
+                                        />
+                                     </div>
+                                     <div>
+                                        <label className="text-[10px] font-bold text-amber-600 uppercase tracking-widest block mb-1.5 ml-1">Nominal</label>
+                                        <input 
+                                          type="number"
+                                          value={simulationData.amount}
+                                          onChange={(e) => setSimulationData({...simulationData, amount: e.target.value})}
+                                          className="w-full bg-white border-2 border-amber-200 rounded-2xl py-3 px-5 text-sm text-amber-900 outline-none focus:border-amber-400 font-bold"
+                                        />
+                                     </div>
+                                     <div>
+                                        <label className="text-[10px] font-bold text-amber-600 uppercase tracking-widest block mb-1.5 ml-1">Status</label>
+                                        <select 
+                                          value={simulationData.status}
+                                          onChange={(e) => setSimulationData({...simulationData, status: e.target.value})}
+                                          className="w-full bg-white border-2 border-amber-200 rounded-2xl py-3 px-5 text-sm text-amber-900 outline-none focus:border-amber-400 font-bold"
+                                        >
+                                           <option value="completed">completed</option>
+                                           <option value="paid">paid</option>
+                                           <option value="settlement">settlement</option>
+                                           <option value="success">success</option>
+                                           <option value="finished">finished</option>
+                                           <option value="pending">pending</option>
+                                        </select>
+                                     </div>
+                                     <button
+                                       onClick={handleSimulateWebhook}
+                                       disabled={isSimulating}
+                                       className="py-3.5 px-6 bg-amber-500 hover:bg-amber-600 active:scale-95 text-white rounded-2xl text-xs font-black transition-all shadow-lg shadow-amber-200 flex items-center justify-center gap-2 uppercase tracking-tight"
+                                     >
+                                       {isSimulating ? "..." : "Simulasi"}
+                                     </button>
+                                  </div>
+                               </div>
+
+                               <div className="mt-6 p-6 bg-gray-50 border-2 border-gray-100 rounded-[2.5rem]">
+                                  <h4 className="text-sm font-black text-gray-800 mb-4 flex items-center justify-between uppercase tracking-tighter">
+                                     <div className="flex items-center gap-2">
+                                        <Clock className="w-5 h-5 text-gray-400" />
+                                        Log Webhook Terbaru
+                                     </div>
+                                     <button onClick={fetchWebhookLogs} className="text-[10px] text-blue-600 hover:underline">Refresh</button>
+                                  </h4>
+                                  <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                                      {webhookLogs.length === 0 ? (
+                                          <p className="text-[10px] text-gray-400 italic text-center py-8">Belum ada log webhook tercatat.</p>
+                                      ) : (
+                                          webhookLogs.map((log: any) => (
+                                              <div key={log.id} className="p-4 bg-white border border-gray-100 rounded-2xl shadow-sm">
+                                                  <div className="flex justify-between items-start mb-2">
+                                                      <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${
+                                                          log.result === 'success' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500'
+                                                      }`}>
+                                                          {log.result}
+                                                      </span>
+                                                      <span className="text-[9px] text-gray-400 font-mono">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                                                  </div>
+                                                  <div className="space-y-1">
+                                                      <p className="text-[10px] font-bold text-gray-700">
+                                                          ID Pay: <span className="text-blue-600 font-mono">
+                                                              {log.body?.order_id || log.body?.merchant_ref || log.body?.id || 'N/A'}
+                                                          </span>
+                                                      </p>
+                                                      {log.processedId && (
+                                                          <p className="text-[10px] font-bold text-green-600">
+                                                              Matched: <span className="font-mono">{log.processedId}</span> ({log.username})
+                                                          </p>
+                                                      )}
+                                                      <div className="mt-2 p-2 bg-gray-50 rounded-lg overflow-hidden">
+                                                          <pre className="text-[8px] text-gray-500 font-mono overflow-x-auto whitespace-pre-wrap">
+                                                              {JSON.stringify(log.body, null, 2)}
+                                                          </pre>
+                                                      </div>
+                                                  </div>
+                                              </div>
+                                          ))
+                                      )}
+                                      <div className="pt-4 flex justify-center">
+                                          <button 
+                                            onClick={async () => {
+                                              await ApiService.syncFromServer();
+                                              alert("Data dari server telah diperbarui.");
+                                            }}
+                                            className="text-[10px] font-bold text-blue-600 uppercase underline"
+                                          >
+                                            Paksa Sinkronisasi Data
+                                          </button>
+                                      </div>
+                                  </div>
+                               </div>
                             </div>
                          </div>
                       </div>
                    ))}
                 </div>
                 
+                    {paymentSettings.gateways.filter(g => g.provider === 'SanPay').map((gateway) => (
+                       <div key={gateway.provider} className="bg-amber-50/20 p-8 rounded-[2.5rem] border border-amber-100 space-y-6 relative overflow-hidden mb-12">
+                          <div className="flex justify-between items-center mb-4">
+                             <div className="flex items-center gap-4">
+                                <div className="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center font-black text-amber-600 border border-amber-100">
+                                   S
+                                </div>
+                                <div>
+                                   <div className="flex items-center gap-2">
+                                      <h4 className="text-lg font-black text-gray-900 tracking-tight">SanPay Integration</h4>
+                                      <span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-[8px] font-bold rounded-full uppercase tracking-widest">New</span>
+                                   </div>
+                                   <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Metode Link Unik SanPay</p>
+                                </div>
+                             </div>
+                             <button 
+                               onClick={() => updateGatewayConfig(gateway.provider, { isActive: !gateway.isActive })}
+                               className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all focus:outline-none ${gateway.isActive ? 'bg-amber-500 shadow-lg shadow-amber-100' : 'bg-gray-200'}`}
+                             >
+                               <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${gateway.isActive ? 'translate-x-6' : 'translate-x-1'}`} />
+                             </button>
+                          </div>
+                          
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                             <div className="space-y-2">
+                                <label className="text-[10px] font-black text-amber-600 uppercase tracking-widest ml-1">Link Unik SanPay (Integritas)</label>
+                                <input 
+                                  type="text"
+                                  value={gateway.baseUrl || ''}
+                                  onChange={(e) => updateGatewayConfig(gateway.provider, { baseUrl: e.target.value })}
+                                  placeholder="https://sanpay.id/pay/unique-id"
+                                  className="w-full bg-white border-2 border-amber-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-amber-500/5 focus:border-amber-500 outline-none font-bold text-gray-900 transition-all shadow-sm"
+                                />
+                                <p className="text-[9px] text-amber-600/70 font-medium ml-1">
+                                    Masukkan link pembayaran unik SanPay. Contoh: <span className="font-mono text-amber-800">https://pay.sanpay.id/mobile.php?mid=ID_ANDA</span>
+                                </p>
+                                <p className="text-[9px] text-red-500 font-bold ml-1">
+                                    PENTING: Pastikan menyertakan parameter <span className="underline">mid</span> agar tidak terjadi "Akses Ditolak".
+                                </p>
+                             </div>
+                             <div className="space-y-2">
+                                <label className="text-[10px] font-black text-amber-600 uppercase tracking-widest ml-1">API Key / Secret Token</label>
+                                <input 
+                                  type="password"
+                                  value={gateway.apiKey}
+                                  onChange={(e) => updateGatewayConfig(gateway.provider, { apiKey: e.target.value })}
+                                  placeholder="SAN_KEY_..."
+                                  className="w-full bg-white border-2 border-amber-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-amber-500/5 focus:border-amber-500 outline-none font-mono text-xs transition-all shadow-sm"
+                                />
+                             </div>
+                             <div className="md:col-span-2 space-y-2">
+                                <label className="text-[10px] font-black text-amber-600 uppercase tracking-widest ml-1">Webhook URL SanPay (Pemberitahuan Otomatis)</label>
+                                <input 
+                                  readOnly
+                                  value={`${window.location.origin}/api/webhook/sanpay`}
+                                  className="w-full bg-amber-50 border-2 border-amber-100 rounded-2xl py-3.5 px-6 font-mono text-[10px] text-amber-600 outline-none shadow-sm cursor-copy"
+                                  onClick={(e) => {
+                                    const el = e.currentTarget;
+                                    el.select();
+                                    navigator.clipboard.writeText(el.value);
+                                    alert("SanPay Webhook URL disalin!");
+                                  }}
+                                />
+                                <p className="text-[10px] text-amber-600/70 mt-2 italic px-2 font-medium">
+                                  * Salin URL ini ke dashboard SanPay Anda untuk integrasi status pembayaran otomatis.
+                                 </p>
+                             </div>
+                          </div>
+                       </div>
+                    ))}
+
+                    {paymentSettings.gateways.filter(g => g.provider === 'ZannPay').map((gateway) => (
+                       <div key={gateway.provider} className="bg-blue-50/20 p-8 rounded-[2.5rem] border border-blue-100 space-y-6 relative overflow-hidden mb-12">
+                          <div className="flex justify-between items-center mb-4">
+                             <div className="flex items-center gap-4">
+                                <div className="w-12 h-12 bg-white rounded-xl shadow-sm flex items-center justify-center font-black text-blue-600 border border-blue-100">
+                                   Z
+                                </div>
+                                <div>
+                                   <div className="flex items-center gap-2">
+                                      <h4 className="text-lg font-black text-gray-900 tracking-tight">ZannPay Integration</h4>
+                                      <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-[8px] font-bold rounded-full uppercase tracking-widest">Premium</span>
+                                   </div>
+                                   <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Metode Link Pembayaran pay.zannstore</p>
+                                </div>
+                             </div>
+                             <button 
+                               onClick={() => updateGatewayConfig(gateway.provider, { isActive: !gateway.isActive })}
+                               className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all focus:outline-none ${gateway.isActive ? 'bg-blue-500 shadow-lg shadow-blue-100' : 'bg-gray-200'}`}
+                             >
+                               <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${gateway.isActive ? 'translate-x-6' : 'translate-x-1'}`} />
+                             </button>
+                          </div>
+                          
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                             <div className="space-y-2">
+                                <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest ml-1">Link Utama ZannPay (Integritas)</label>
+                                <input 
+                                  type="text"
+                                  value={gateway.baseUrl || ''}
+                                  onChange={(e) => updateGatewayConfig(gateway.provider, { baseUrl: e.target.value })}
+                                  placeholder="https://pay.zannstore.id/order/ID_ANDA"
+                                  className="w-full bg-white border-2 border-blue-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-blue-500/5 focus:border-blue-500 outline-none font-bold text-gray-900 transition-all shadow-sm"
+                                />
+                                <p className="text-[9px] text-blue-600/70 font-medium ml-1">
+                                    Masukkan link pembayaran unik dari dashboard ZannPay/ZannStore Anda.
+                                </p>
+                             </div>
+                             <div className="space-y-2">
+                                <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest ml-1">Secret Key / Token</label>
+                                <input 
+                                  type="password"
+                                  value={gateway.apiKey}
+                                  onChange={(e) => updateGatewayConfig(gateway.provider, { apiKey: e.target.value })}
+                                  placeholder="ZANN_..."
+                                  className="w-full bg-white border-2 border-blue-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-blue-500/5 focus:border-blue-500 outline-none font-mono text-xs transition-all shadow-sm"
+                                />
+                             </div>
+                             <div className="md:col-span-2 space-y-2">
+                                <label className="text-[10px] font-black text-blue-600 uppercase tracking-widest ml-1">Webhook URL ZannPay</label>
+                                <input 
+                                  readOnly
+                                  value={`${window.location.origin}/api/webhook/zannpay`}
+                                  className="w-full bg-blue-50 border-2 border-blue-100 rounded-2xl py-3.5 px-6 font-mono text-[10px] text-blue-600 outline-none shadow-sm cursor-copy"
+                                  onClick={(e) => {
+                                    const el = e.currentTarget;
+                                    el.select();
+                                    navigator.clipboard.writeText(el.value);
+                                    alert("ZannPay Webhook URL disalin!");
+                                  }}
+                                />
+                             </div>
+                          </div>
+                       </div>
+                    ))}
                 <div className="mt-12 p-8 bg-blue-50/50 rounded-[2.5rem] border border-blue-100">
                    <div className="flex gap-4">
                       <div className="p-3 bg-white rounded-2xl shadow-sm text-blue-600 h-fit">
@@ -1406,9 +1915,328 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
              </div>
              
-             <div className="p-10 bg-indigo-900 rounded-[3rem] text-white overflow-hidden relative">
-                <div className="relative z-10">
-                   <h4 className="text-xl font-black mb-2 uppercase tracking-tighter">MWSTORE Cloud Console</h4>
+              {/* TAMPILKAN / KELOLA FITUR MENU */}
+              <div className="bg-white p-10 rounded-[3rem] border border-gray-100 shadow-sm space-y-8">
+                 <h3 className="text-2xl font-black text-gray-900 flex items-center gap-4 uppercase tracking-tighter">
+                    <div className="p-3 bg-blue-100 text-blue-600 rounded-2xl">
+                       <LayoutGrid className="w-6 h-6" />
+                    </div>
+                    Konfigurasi Menu Beranda
+                 </h3>
+                 <p className="text-xs text-gray-400 font-bold -mt-4 uppercase tracking-widest leading-relaxed">
+                    Aktifkan atau nonaktifkan fitur menu layanan di halaman utama pelanggan.
+                 </p>
+
+                 <div className="space-y-4">
+                    {/* Toggle Nokos */}
+                    <div className="flex justify-between items-center p-6 bg-gray-50 rounded-[2rem] border border-gray-100 hover:bg-white hover:shadow-md transition-all group">
+                       <div className="flex items-center gap-4">
+                          <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center text-xl font-black">
+                             📱
+                          </div>
+                          <div>
+                             <p className="text-xs font-black text-gray-900 uppercase tracking-widest">Menu Nokos (OTP)</p>
+                             <p className="text-[10px] text-gray-400 font-bold uppercase font-sans">Beli Nomor Kosong / SMS OTP</p>
+                          </div>
+                       </div>
+                       <button 
+                         onClick={() => handleToggleMenu('nokos')}
+                         className={`relative inline-flex h-7 w-12 items-center rounded-full transition-all focus:outline-none ${activeMenus.nokos ? 'bg-blue-600 shadow-lg shadow-blue-100' : 'bg-gray-200'}`}
+                       >
+                         <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${activeMenus.nokos ? 'translate-x-6' : 'translate-x-1'}`} />
+                       </button>
+                    </div>
+                 </div>
+              </div>
+
+             
+                
+              {/* KONFIGURASI API KEY NOKOS (OTP) */}
+              <div className="bg-white p-10 rounded-[3rem] border border-gray-100 shadow-sm space-y-8 mb-8">
+                 <div className="flex justify-between items-start flex-col sm:flex-row gap-4">
+                    <div className="space-y-2">
+                       <h3 className="text-2xl font-black text-gray-900 flex items-center gap-4 uppercase tracking-tighter">
+                          <div className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl">
+                             <Smartphone className="w-6 h-6" />
+                          </div>
+                          Integrasi API Nokos
+                       </h3>
+                       <p className="text-xs text-gray-400 font-bold uppercase tracking-widest leading-relaxed">
+                          Hubungkan penyedia OTP (Nokos) lewat API untuk otomatisasi pengiriman nomor virtual.
+                       </p>
+                    </div>
+                    
+                    <button 
+                      onClick={() => setNokosSettingsState({ ...nokosSettings, isActive: !nokosSettings.isActive })}
+                      className={`relative inline-flex h-8 w-14 items-center rounded-full transition-all focus:outline-none ${nokosSettings.isActive ? 'bg-indigo-600 shadow-lg shadow-indigo-100' : 'bg-gray-200'}`}
+                    >
+                      <span className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${nokosSettings.isActive ? 'translate-x-7' : 'translate-x-1'}`} />
+                    </button>
+                 </div>
+
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-2">
+                    {/* Provider */}
+                    <div className="space-y-3">
+                       <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Penyedia Layanan (Provider)</label>
+                       <select 
+                         value={nokosSettings.provider}
+                         onChange={(e) => {
+                           const prov = e.target.value;
+                           let defaultUrl = 'https://api.jasaotp.id/v1';
+                           if (prov === 'SMSHub') defaultUrl = 'https://smshub.org/api';
+                           else if (prov === 'SmsActivate') defaultUrl = 'https://api.sms-activate.org/stori/';
+                           else if (prov === 'Simpatic') defaultUrl = 'https://api.simpatic.id/v1';
+                           setNokosSettingsState({ 
+                             ...nokosSettings, 
+                             provider: prov,
+                             baseUrl: defaultUrl 
+                           });
+                         }}
+                         className="w-full bg-gray-50/50 border-2 border-gray-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-bold text-gray-950 transition-all shadow-sm"
+                       >
+                         <option value="JasaOTP">JasaOTP.id (Rekomendasi Indonesia)</option>
+                         <option value="SMSHub">SMSHub.org</option>
+                         <option value="SmsActivate">SMS-Activate.org</option>
+                         <option value="Simpatic">Simpatic.id</option>
+                         <option value="Manual">Layanan Manual / Lainnya</option>
+                       </select>
+                    </div>
+
+                    {/* Base URL */}
+                    <div className="space-y-3">
+                       <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Base URL API Endpoint</label>
+                       <input 
+                         type="text"
+                         value={nokosSettings.baseUrl || ''}
+                         onChange={(e) => setNokosSettingsState({ ...nokosSettings, baseUrl: e.target.value })}
+                         placeholder="https://smshub.org/api"
+                         className="w-full bg-gray-50/50 border-2 border-gray-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-semibold text-gray-950 transition-all shadow-sm"
+                       />
+                    </div>
+
+                    {/* API Key */}
+                    <div className="space-y-3 md:col-span-2">
+                       <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Secret API Key / Token Akses</label>
+                       <div className="relative">
+                          <input 
+                            type={showNokosApiKey ? 'text' : 'password'}
+                            value={nokosSettings.apiKey}
+                            onChange={(e) => setNokosSettingsState({ ...nokosSettings, apiKey: e.target.value })}
+                            placeholder="Masukkan token akses API kunci Anda disini..."
+                            className="w-full bg-gray-50/50 border-2 border-gray-100 rounded-2xl py-3.5 pl-6 pr-14 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-mono text-sm tracking-wide text-gray-950 transition-all shadow-sm"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowNokosApiKey(!showNokosApiKey)}
+                            className="absolute right-5 top-1/2 -translate-y-1/2 p-1.5 text-gray-400 hover:text-indigo-600 transition-colors"
+                          >
+                            {showNokosApiKey ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                          </button>
+                       </div>
+                        {nokosSettings.provider === 'JasaOTP' && (
+                           <div className="mb-4 bg-indigo-50/50 p-5 rounded-2xl flex items-center justify-between border border-indigo-100/50 animate-in ... animate-in fade-in duration-300">
+                              <div className="space-y-1">
+                                 <span className="text-[10px] uppercase font-black tracking-widest text-[#6366f1] leading-none block">Saldo JasaOTP.id</span>
+                                 <h5 className="text-lg font-black text-indigo-950">
+                                    {jasaOtpBalance !== null ? `Rp ${jasaOtpBalance.toLocaleString('id-ID')}` : 'Belum diperiksa'}
+                                 </h5>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleCheckJasaOtpBalance}
+                                disabled={isCheckingJasaOtpBalance}
+                                className="px-5 py-3 bg-indigo-600 text-white hover:bg-indigo-700 transition-all rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-md shadow-indigo-100"
+                              >
+                                {isCheckingJasaOtpBalance ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                                Periksa Saldo
+                              </button>
+                           </div>
+                        )}
+                        <p className="text-[10px] text-gray-400 mt-1 font-semibold italic">
+                         * API Key ini digunakan untuk mengautentikasi dan melakukan request nomor virtual secara otomatis. Jaga kerahasiaan Key Anda.
+                       </p>
+                    </div>
+                 </div>
+
+                 <div className="flex justify-end pt-4 border-t border-gray-50">
+                    <button
+                      onClick={handleSaveNokosSettings}
+                      disabled={isSavingNokos}
+                      className="px-8 py-4 bg-indigo-600 text-white rounded-[1.5rem] font-black uppercase tracking-widest text-[10px] shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all flex items-center gap-3 disabled:opacity-50"
+                    >
+                      {isSavingNokos ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Menyimpan...
+                        </>
+                      ) : (
+                        <>
+                          <ShieldCheck className="w-4 h-4" />
+                          Simpan API Nokos
+                        </>
+                      )}
+                    </button>
+                 </div>
+              </div>
+
+
+                
+
+              {/* INTEGRASI API SUNTIK SOSMED (SMM) */}
+              <div className="bg-white p-6 sm:p-8 rounded-[2rem] border border-gray-100 shadow-sm space-y-6 mt-8 animate-in fade-in duration-300">
+                  <div className="flex justify-between items-start flex-col sm:flex-row gap-4">
+                     <div className="space-y-2">
+                        <h3 className="text-2xl font-black text-gray-900 flex items-center gap-4 uppercase tracking-tighter">
+                           <div className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl">
+                              <Globe className="w-6 h-6" />
+                           </div>
+                           Integrasi API Suntik Sosmed (SMM)
+                        </h3>
+                        <p className="text-xs text-gray-400 font-bold uppercase tracking-widest leading-relaxed">
+                           Hubungkan Pipzpedia API untuk otomatisasi layanan suntik sosmed (followers, views, likes).
+                        </p>
+                     </div>
+                     
+                     <button 
+                       type="button"
+                       onClick={() => setSmmSettingsState({ ...smmSettings, isActive: !smmSettings.isActive })}
+                       className={`relative inline-flex h-8 w-14 items-center rounded-full transition-all focus:outline-none ${smmSettings.isActive ? 'bg-indigo-600 shadow-lg shadow-indigo-100' : 'bg-gray-200'}`}
+                     >
+                       <span className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${smmSettings.isActive ? 'translate-x-7' : 'translate-x-1'}`} />
+                     </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-2">
+                     {/* Provider */}
+                     <div className="space-y-3">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Penyedia Layanan (Provider)</label>
+                        <select 
+                          value={smmSettings.provider}
+                          onChange={(e) => setSmmSettingsState({ ...smmSettings, provider: e.target.value })}
+                          className="w-full bg-gray-50/50 border-2 border-gray-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-bold text-gray-950 transition-all shadow-sm"
+                        >
+                          <option value="Pipzpedia SMM">Pipzpedia SMM Panel</option>
+                          <option value="Manual">Layanan Manual / Lainnya</option>
+                        </select>
+                     </div>
+
+                      {/* Profit Margin / Price Markup */}
+                      {/* Profit Margin / Price Markup */}
+                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-3 text-left">
+                             <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Keuntungan / Markup Harga SMM (%)</label>
+                             <div className="relative">
+                                <input 
+                                  type="number"
+                                  min="0"
+                                  max="1000"
+                                  value={smmSettings.markupPercent !== undefined ? smmSettings.markupPercent : 50}
+                                  onChange={(e) => setSmmSettingsState({ ...smmSettings, markupPercent: Math.max(0, parseInt(e.target.value) || 0) })}
+                                  placeholder="50"
+                                  className="w-full bg-gray-50/50 border-2 border-gray-100 rounded-2xl py-3.5 pl-6 pr-12 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-bold text-gray-950 transition-all shadow-sm"
+                                />
+                                <span className="absolute right-6 top-1/2 -translate-y-1/2 text-sm font-black text-gray-400">%</span>
+                             </div>
+                          </div>
+
+                          <div className="space-y-3 text-left">
+                             <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Markup Tambahan (Rupiah Rp per 1.000 Qty)</label>
+                             <div className="relative">
+                                <span className="absolute left-6 top-1/2 -translate-y-1/2 text-sm font-black text-gray-400">Rp</span>
+                                <input 
+                                  type="number"
+                                  min="0"
+                                  max="1000000"
+                                  value={smmSettings.markupFlat !== undefined ? smmSettings.markupFlat : 0}
+                                  onChange={(e) => setSmmSettingsState({ ...smmSettings, markupFlat: Math.max(0, parseInt(e.target.value) || 0) })}
+                                  placeholder="0"
+                                  className="w-full bg-gray-50/50 border-2 border-gray-100 rounded-2xl py-3.5 pl-14 pr-6 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-bold text-gray-950 transition-all shadow-sm"
+                                />
+                             </div>
+                          </div>
+                       </div>
+
+                     {/* Base URL */}
+                     <div className="space-y-3">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Base URL API Endpoint</label>
+                        <input 
+                          type="text"
+                          value={smmSettings.baseUrl || ''}
+                          onChange={(e) => setSmmSettingsState({ ...smmSettings, baseUrl: e.target.value })}
+                          placeholder="https://pipzpedia.my.id/api/v2"
+                          className="w-full bg-gray-50/50 border-2 border-gray-100 rounded-2xl py-3.5 px-6 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-semibold text-gray-950 transition-all shadow-sm"
+                        />
+                     </div>
+
+                     {/* API Key */}
+                     <div className="space-y-3 md:col-span-2">
+                        <label className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Secret API Key / Token Akses</label>
+                        <div className="relative">
+                           <input 
+                             type={showSmmApiKey ? 'text' : 'password'}
+                             value={smmSettings.apiKey}
+                             onChange={(e) => setSmmSettingsState({ ...smmSettings, apiKey: e.target.value })}
+                             placeholder="Masukkan token akses API Pipzpedia Anda disini..."
+                             className="w-full bg-gray-50/50 border-2 border-gray-100 rounded-2xl py-3.5 pl-6 pr-14 focus:ring-4 focus:ring-indigo-500/5 focus:border-indigo-500 outline-none font-mono text-sm tracking-wide text-gray-950 transition-all shadow-sm"
+                           />
+                           <button
+                             type="button"
+                             onClick={() => setShowSmmApiKey(!showSmmApiKey)}
+                             className="absolute right-5 top-1/2 -translate-y-1/2 p-1.5 text-gray-400 hover:text-indigo-600 transition-colors"
+                           >
+                             {showSmmApiKey ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                           </button>
+                        </div>
+                        {smmSettings.provider === 'Pipzpedia SMM' && (
+                           <div className="mb-4 bg-indigo-50/50 p-5 rounded-2xl flex items-center justify-between border border-indigo-100/50 animate-in fade-in duration-300">
+                              <div className="space-y-1">
+                                 <span className="text-[10px] uppercase font-black tracking-widest text-[#6366f1] leading-none block">Saldo Pipzpedia Akun</span>
+                                 <h5 className="text-lg font-black text-indigo-950">
+                                    {smmProviderBalance !== null ? `${smmProviderBalance}` : 'Belum diperiksa'}
+                                 </h5>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={handleCheckSmmBalance}
+                                disabled={isCheckingSmmBalance}
+                                className="px-5 py-3 bg-indigo-600 text-white hover:bg-indigo-700 transition-all rounded-xl text-xs font-black uppercase flex items-center gap-2 shadow-md shadow-indigo-100"
+                              >
+                                {isCheckingSmmBalance ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                                Periksa Saldo
+                              </button>
+                           </div>
+                        )}
+                        <p className="text-[10px] text-gray-400 mt-1 font-semibold italic">
+                          * API Key SMM ini digunakan untuk mengautentikasi dan melakukan request penambahan followers/views secara otomatis dari Pipzpedia.
+                        </p>
+                     </div>
+                  </div>
+
+                  <div className="flex justify-end pt-4 border-t border-gray-50">
+                     <button
+                       type="button"
+                       onClick={handleSaveSmmSettings}
+                       disabled={isSavingSmm}
+                       className="px-8 py-4 bg-indigo-600 text-white rounded-[1.5rem] font-black uppercase tracking-widest text-[10px] shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all flex items-center gap-3 disabled:opacity-50"
+                     >
+                       {isSavingSmm ? (
+                         <>
+                           <Loader2 className="w-4 h-4 animate-spin" />
+                           Menyimpan...
+                         </>
+                       ) : (
+                         <>
+                           <ShieldCheck className="w-4 h-4" />
+                           Simpan API SMM
+                         </>
+                       )}
+                     </button>
+                  </div>
+               </div>
+
+              <div className="p-10 bg-indigo-900 rounded-[3rem] text-white overflow-hidden relative mt-8 animate-in fade-in duration-300">
+                 <div className="relative z-10">
+                    <h4 className="text-xl font-black mb-2 uppercase tracking-tighter">MWSTORE Cloud Console</h4>
                    <p className="text-indigo-200 text-sm font-bold mb-6">Database terenkripsi dengan standar industri.</p>
                    <div className="flex items-center gap-4">
                       <div className="px-4 py-2 bg-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest border border-white/10 flex items-center gap-2">
@@ -1950,6 +2778,60 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                   <div className="space-y-2">
                      <label className="text-sm font-medium text-gray-500">Kategori</label>
+                      {newProduct.category.toLowerCase() === 'nokos' && (
+                         <div className="my-3 bg-indigo-50/50 p-5 rounded-xl border border-indigo-100 space-y-4 animate-in slide-in-from-top-2 duration-200">
+                            <div className="flex justify-between items-center">
+                               <div className="space-y-0.5 text-left">
+                                  <span className="text-sm font-bold text-gray-800">Hubungkan JasaOTP otomatis?</span>
+                                  <p className="text-[10px] text-gray-400">Gunakan API JasaOTP untuk order nomor & ambil OTP otomatis</p>
+                               </div>
+                               <button 
+                                 type="button"
+                                 onClick={() => setNewProduct({ ...newProduct, isNokosApi: !newProduct.isNokosApi })}
+                                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all focus:outline-none shrink-0 ${newProduct.isNokosApi ? 'bg-indigo-600 shadow-md' : 'bg-gray-200'}`}
+                               >
+                                 <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${newProduct.isNokosApi ? 'translate-x-6' : 'translate-x-1'}`} />
+                               </button>
+                            </div>
+
+                            {newProduct.isNokosApi && (
+                               <div className="grid grid-cols-3 gap-3 pt-2 animate-in fade-in duration-200">
+                                  <div className="space-y-1.5 text-left font-semibold">
+                                     <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-0.5">Negara (ID)</label>
+                                     <input 
+                                       type="text"
+                                       placeholder="Contoh: 6"
+                                       value={newProduct.nokosCountry}
+                                       onChange={e => setNewProduct({ ...newProduct, nokosCountry: e.target.value })}
+                                       className="w-full bg-white border border-gray-200 rounded-lg py-2 px-3 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none text-xs text-gray-900 transition-all font-semibold"
+                                     />
+                                  </div>
+
+                                  <div className="space-y-1.5 text-left font-semibold">
+                                     <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-0.5">Layanan (Code)</label>
+                                     <input 
+                                       type="text"
+                                       placeholder="Contoh: wa"
+                                       value={newProduct.nokosService}
+                                       onChange={e => setNewProduct({ ...newProduct, nokosService: e.target.value })}
+                                       className="w-full bg-white border border-gray-200 rounded-lg py-2 px-3 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none text-xs text-gray-900 transition-all font-semibold"
+                                     />
+                                  </div>
+
+                                  <div className="space-y-1.5 text-left font-semibold">
+                                     <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest ml-0.5">Operator</label>
+                                     <input 
+                                       type="text"
+                                       placeholder="Contoh: any"
+                                       value={newProduct.nokosOperator}
+                                       onChange={e => setNewProduct({ ...newProduct, nokosOperator: e.target.value })}
+                                       className="w-full bg-white border border-gray-200 rounded-lg py-2 px-3 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none text-xs text-gray-900 transition-all font-semibold"
+                                     />
+                                  </div>
+                               </div>
+                            )}
+                         </div>
+                      )}
                      <input 
                        required
                        value={newProduct.category}
@@ -1970,28 +2852,41 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </div>
                         <div className="flex-1 space-y-3">
                            <input 
-                             type="file" 
-                             id="imageUpload" 
-                             className="hidden" 
-                             accept="image/*"
-                             onChange={(e) => {
-                               const file = e.target.files?.[0];
-                               if (file) {
-                                 const reader = new FileReader();
-                                 reader.onloadend = () => {
-                                   setNewProduct({...newProduct, image: reader.result as string});
-                                 };
-                                 reader.readAsDataURL(file);
-                               }
-                             }}
-                           />
-                           <button 
-                             type="button" 
-                             onClick={() => document.getElementById('imageUpload')?.click()}
-                             className="w-full bg-[#64748b] text-white py-2.5 rounded-lg text-sm font-bold shadow-sm hover:bg-[#475569] transition-all"
-                           >
-                              Buka Galeri
-                           </button>
+                              type="file" 
+                              id="imageUpload" 
+                              className="hidden" 
+                              accept="image/*"
+                              disabled={isUploadingProduct}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  setIsUploadingProduct(true);
+                                  const reader = new FileReader();
+                                  reader.onloadend = async () => {
+                                    try {
+                                      const base64 = reader.result as string;
+                                      const compressed = await compressImage(base64);
+                                      const storageUrl = await uploadToFirebaseStorage(compressed, 'products');
+                                      setNewProduct({...newProduct, image: storageUrl});
+                                    } catch (err) {
+                                      console.error("Product photo upload error:", err);
+                                      alert("Gagal mengunggah foto produk.");
+                                    } finally {
+                                      setIsUploadingProduct(false);
+                                    }
+                                  };
+                                  reader.readAsDataURL(file);
+                                }
+                              }}
+                            />
+                            <button 
+                              type="button" 
+                              disabled={isUploadingProduct}
+                              onClick={() => document.getElementById('imageUpload')?.click()}
+                              className="w-full bg-[#64748b] text-white py-2.5 rounded-lg text-sm font-bold shadow-sm hover:bg-[#475569] transition-all disabled:opacity-50"
+                            >
+                               {isUploadingProduct ? "Mengunggah..." : "Buka Galeri"}
+                            </button>
                            <div className="grid grid-cols-2 gap-3">
                               <button type="button" className="bg-white border border-gray-200 text-gray-700 py-2.5 rounded-lg text-xs font-bold hover:bg-gray-50 transition-all">
                                  Lihat

@@ -3,7 +3,7 @@ import { Users, Send, User, ShieldCheck, Clock, X, Image as ImageIcon, Loader2, 
 import { Message } from '@/types';
 import { ApiService, safeParseDate } from '@/services/apiService';
 import { motion, AnimatePresence } from 'motion/react';
-import { compressImage } from '@/lib/imageUtils';
+import { compressImage, uploadToFirebaseStorage } from '@/lib/imageUtils';
 
 interface CommunityChatProps {
   username: string;
@@ -100,10 +100,11 @@ const CommunityChat: React.FC<CommunityChatProps> = ({ username, onBack, isAdmin
       try {
         const base64 = event.target?.result as string;
         const compressed = await compressImage(base64);
-        await handleSendMessage(undefined, compressed);
+        const storageUrl = await uploadToFirebaseStorage(compressed, 'community-chats');
+        await handleSendMessage(undefined, storageUrl);
       } catch (error) {
-        console.error("Compression error:", error);
-        alert("Gagal memproses gambar.");
+        console.error("Compression/Upload error:", error);
+        alert("Gagal memproses atau mengunggah gambar.");
       } finally {
         setIsUploading(false);
         if (fileInputRef.current) fileInputRef.current.value = '';

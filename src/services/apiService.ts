@@ -55,6 +55,10 @@ const store = new StoreListener();
 
 // Persistence Helper
 const Storage = {
+  _syncInProgress: false,
+  _syncPending: false,
+  _loadedFromServer: false,
+
   get: <T>(key: string, defaultValue: T): T => {
     const data = localStorage.getItem(key);
     try {
@@ -74,6 +78,17 @@ const Storage = {
   },
 // Remote Sync
   syncToServer: async (retryCount = 3) => {
+    if (!Storage._loadedFromServer) {
+      console.warn("ApiService: Skipping syncToServer because database has not been loaded from server yet.");
+      return;
+    }
+    if (Storage._syncInProgress) {
+      Storage._syncPending = true;
+      return;
+    }
+    Storage._syncInProgress = true;
+    Storage._syncPending = false;
+
     const db = {
       users: Storage.get(KEYS.USERS, {}),
       products: Storage.get(KEYS.PRODUCTS, []),
@@ -85,10 +100,6 @@ const Storage = {
       settings: Storage.get(KEYS.SETTINGS, { maintenanceMode: false })
     };
     try {
-      // Small delay to batch multiple rapid changes
-      if ((window as any)._syncInProgress) return;
-      (window as any)._syncInProgress = true;
-      
       const response = await fetch('/api/db', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -96,33 +107,85 @@ const Storage = {
       });
       
       if (!response.ok) {
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.includes("text/html")) {
+          const text = await response.text();
+          if (text.includes("Starting Server...")) {
+             console.warn("ApiService: Server booting, skipping sync retry.");
+             Storage._syncInProgress = false;
+             return;
+          }
+        }
         throw new Error(`Sync failed: ${response.statusText}`);
       }
       
-      setTimeout(() => { (window as any)._syncInProgress = false; }, 1000);
+      // Delay before next sync to batch rapid alterations
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch (e) {
       console.error("Server sync failed", e);
-      (window as any)._syncInProgress = false;
-      if (retryCount > 0) {
+      if (retryCount > 0 && !Storage._syncPending) {
         console.warn(`Retrying sync... (${retryCount} left)`);
-        setTimeout(() => Storage.syncToServer(retryCount - 1), 2000);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        Storage._syncInProgress = false;
+        await Storage.syncToServer(retryCount - 1);
+        return;
+      }
+    } finally {
+      Storage._syncInProgress = false;
+      if (Storage._syncPending) {
+        // Run subsequent pending syncs immediately
+        Storage.syncToServer();
       }
     }
   },
-  fetchFromServer: async (retryCount = 3) => {
+  fetchFromServer: async (retryCount = 10) => {
+    // If a sync is currently in progress or pending, do NOT fetch from server to avoid over-riding local changes
+    if (Storage._syncInProgress || Storage._syncPending) {
+      console.warn("ApiService: Skipping fetchFromServer because local changes are currently syncing to server.");
+      return;
+    }
+
+    // Add cache buster to prevent stale responses
+    const url = `/api/db?t=${Date.now()}`;
+    console.log(`ApiService: Fetching from ${url}... (Retries left: ${retryCount})`);
     try {
-      const res = await fetch('/api/db');
-      if (!res.ok) {
-        throw new Error(`Fetch failed: ${res.statusText} (${res.status})`);
-      }
+      const res = await fetch(url, {
+        headers: {
+          'Accept': 'application/json',
+          'Cache-Control': 'no-cache'
+        }
+      });
+      
       const contentType = res.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
+      
+      if (!res.ok || !contentType || !contentType.includes("application/json")) {
         const text = await res.text();
-        console.error("Received non-JSON response:", text.substring(0, 100));
-        throw new Error("Received non-JSON response from server");
+        console.warn(`ApiService: Received non-JSON or error response (${res.status}):`, text.substring(0, 200));
+        
+        // If we see "Starting Server..." it means the infrastructure is booting
+        if (text.includes("Starting Server...") || text.includes("<title>Starting Server...</title>")) {
+          if (retryCount > 0) {
+            console.warn(`ApiService: Server is booting. Retrying in 4 seconds... (${retryCount} retries left)`);
+            await new Promise(resolve => setTimeout(resolve, 4000));
+            return Storage.fetchFromServer(retryCount - 1);
+          }
+        }
+        
+        if (!res.ok) throw new Error(`Fetch failed with status ${res.status}`);
+        throw new Error(`Expected JSON but received ${contentType || 'unknown type'}.`);
       }
+      
       const db = await res.json();
       if (db) {
+        // Mark that we successfully synced from server
+        Storage._loadedFromServer = true;
+
+        // Verify again that no sync is in progress before writing to storage
+        if (Storage._syncInProgress || Storage._syncPending) {
+          console.warn("ApiService: Skipping storage update because local sync was triggered during fetch.");
+          return;
+        }
+
         // Use silent set to avoid sync loop
         if (db.users) Storage.set(KEYS.USERS, db.users, true);
         if (db.products) Storage.set(KEYS.PRODUCTS, db.products, true);
@@ -149,12 +212,38 @@ const Storage = {
 export const ApiService = {
   initialize: async () => {
     try {
-        const res = await fetch('/api/health');
-        if (res.ok) {
-           await Storage.fetchFromServer();
+        console.log("ApiService: Initializing system connection...");
+        // Use Storage.fetchFromServer which now has robust retry logic for "Starting Server" page
+        await Storage.fetchFromServer();
+        console.log("ApiService: Initialized successfully");
+        
+        // Seed products if empty (ONLY on initial launch if never seeded before)
+        const products = Storage.get<Product[]>(KEYS.PRODUCTS, []);
+        const alreadySeeded = localStorage.getItem('mwstore_seeded') === 'true';
+        if (products.length === 0 && !alreadySeeded) {
+          console.log("ApiService: Seeding initial products because database was empty...");
+          const { MOCK_PRODUCTS } = await import('../constants');
+          // Add default products including Nokos with isNokosApi configured
+          const seededProducts = MOCK_PRODUCTS.map(p => {
+            if (p.category.toLowerCase() === 'nokos') {
+              return {
+                ...p,
+                isNokosApi: true,
+                nokosCountry: p.id === 'nokos-wa-1' ? '6' : '6', // e.g. 6 is Indonesia in JasaOTP
+                nokosService: p.id === 'nokos-wa-1' ? 'wa' : 'tg',
+                nokosOperator: 'any'
+              };
+            }
+            return p;
+          });
+          Storage.set(KEYS.PRODUCTS, seededProducts);
+          localStorage.setItem('mwstore_seeded', 'true');
+        } else if (products.length > 0) {
+          // If we loaded products successfully, also mark as seeded so we don't clear and re-seed
+          localStorage.setItem('mwstore_seeded', 'true');
         }
     } catch (e) {
-        console.error("Initialization check failed", e);
+        console.error("Initialization failed", e);
     }
   },
   syncFromServer: async () => {
@@ -189,19 +278,22 @@ export const ApiService = {
 
   getUser: async (username: string): Promise<UserAccount | null> => {
     const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
-    return users[username] || null;
+    const actualKey = Object.keys(users).find(k => k.toLowerCase() === username.toLowerCase());
+    return actualKey ? users[actualKey] : null;
   },
 
   saveUser: async (user: UserAccount, username: string) => {
     const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
-    users[username] = { ...user, username };
+    const actualKey = Object.keys(users).find(k => k.toLowerCase() === username.toLowerCase()) || username;
+    users[actualKey] = { ...user, username: actualKey };
     Storage.set(KEYS.USERS, users);
   },
 
   updateUserSession: async (username: string, sessionData: { uid: string, lastLogin: string }) => {
     const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
-    if (users[username]) {
-      users[username] = { ...users[username], ...sessionData };
+    const actualKey = Object.keys(users).find(k => k.toLowerCase() === username.toLowerCase());
+    if (actualKey && users[actualKey]) {
+      users[actualKey] = { ...users[actualKey], ...sessionData };
       Storage.set(KEYS.USERS, users);
     }
     // Update active session too if it matches
@@ -217,8 +309,13 @@ export const ApiService = {
   },
 
   listenToUser: (username: string, callback: (user: UserAccount | null) => void) => {
-    callback(Storage.get<Record<string, UserAccount>>(KEYS.USERS, {})[username] || null);
-    return store.subscribe(KEYS.USERS, (users) => callback(users[username] || null));
+    const fetch = () => {
+      const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
+      const actualKey = Object.keys(users).find(k => k.toLowerCase() === username.toLowerCase());
+      callback(actualKey ? users[actualKey] : null);
+    };
+    fetch();
+    return store.subscribe(KEYS.USERS, fetch);
   },
 
   listenToUsers: (isAdmin: boolean, callback: (users: UserAccount[]) => void) => {
@@ -228,9 +325,9 @@ export const ApiService = {
   },
 
   // Orders
-  getOrders: async (username: string, isAdmin: boolean = false): Promise<Order[]> => {
+  getOrders: (username?: string, isAdmin: boolean = false): Order[] => {
     const orders = Storage.get<Order[]>(KEYS.ORDERS, []);
-    if (isAdmin) return orders;
+    if (!username || isAdmin) return orders;
     return orders.filter(o => o.username === username);
   },
 
@@ -396,8 +493,9 @@ export const ApiService = {
   // Balance
   updateBalanceByUsername: async (username: string, newBalance: number) => {
     const users = Storage.get<Record<string, UserAccount>>(KEYS.USERS, {});
-    if (users[username]) {
-      users[username].balance = newBalance;
+    const actualKey = Object.keys(users).find(k => k.toLowerCase() === username.toLowerCase());
+    if (actualKey && users[actualKey]) {
+      users[actualKey].balance = newBalance;
       Storage.set(KEYS.USERS, users);
       return true;
     }
@@ -406,13 +504,158 @@ export const ApiService = {
 
   // Settings
   listenToSettings: (callback: (settings: any) => void) => {
-    callback(Storage.get(KEYS.SETTINGS, { maintenanceMode: false }));
-    return store.subscribe(KEYS.SETTINGS, callback);
+    const defaultSettings = { 
+      maintenanceMode: false,
+      activeMenus: {
+        nokos: true,
+        game: true,
+        pulsa: true,
+        ewallet: true,
+        voucher: true,
+        smm: true
+      },
+      nokosSettings: {
+        provider: 'SMSHub',
+        apiKey: '',
+        baseUrl: 'https://smshub.org/api',
+        isActive: false
+      },
+      smmSettings: {
+        provider: 'Pipzpedia SMM',
+        apiKey: '2e935e9150f29fd3703901b508f7ce19',
+        baseUrl: 'https://pipzpedia.my.id/api/v2',
+        isActive: true
+      }
+    };
+    const current = Storage.get(KEYS.SETTINGS, defaultSettings);
+    if (!current.activeMenus) {
+      current.activeMenus = defaultSettings.activeMenus;
+    } else if (current.activeMenus.smm === undefined) {
+      current.activeMenus.smm = true;
+    }
+    if (!current.nokosSettings) {
+      current.nokosSettings = defaultSettings.nokosSettings;
+    }
+    if (!current.smmSettings) {
+      current.smmSettings = defaultSettings.smmSettings;
+    }
+    callback(current);
+    return store.subscribe(KEYS.SETTINGS, (newVal) => {
+      if (newVal) {
+        if (!newVal.activeMenus) {
+          newVal.activeMenus = defaultSettings.activeMenus;
+        } else if (newVal.activeMenus.smm === undefined) {
+          newVal.activeMenus.smm = true;
+        }
+        if (!newVal.nokosSettings) {
+          newVal.nokosSettings = defaultSettings.nokosSettings;
+        }
+        if (!newVal.smmSettings) {
+          newVal.smmSettings = defaultSettings.smmSettings;
+        }
+        callback(newVal);
+      } else {
+        callback(defaultSettings);
+      }
+    });
   },
 
   setMaintenanceMode: async (status: boolean) => {
-    const settings = Storage.get(KEYS.SETTINGS, { maintenanceMode: false });
+    const defaultSettings = { 
+      maintenanceMode: status,
+      activeMenus: {
+        nokos: true,
+        game: true,
+        pulsa: true,
+        ewallet: true,
+        voucher: true,
+        smm: true
+      },
+      nokosSettings: {
+        provider: 'SMSHub',
+        apiKey: '',
+        baseUrl: 'https://smshub.org/api',
+        isActive: false
+      },
+      smmSettings: {
+        provider: 'Pipzpedia SMM',
+        apiKey: '2e935e9150f29fd3703901b508f7ce19',
+        baseUrl: 'https://pipzpedia.my.id/api/v2',
+        isActive: true
+      }
+    };
+    const settings = Storage.get(KEYS.SETTINGS, defaultSettings);
     settings.maintenanceMode = status;
+    Storage.set(KEYS.SETTINGS, settings);
+  },
+
+  setActiveMenus: async (activeMenus: Record<string, boolean>) => {
+    const defaultSettings = { 
+      maintenanceMode: false,
+      activeMenus: activeMenus,
+      nokosSettings: {
+        provider: 'SMSHub',
+        apiKey: '',
+        baseUrl: 'https://smshub.org/api',
+        isActive: false
+      },
+      smmSettings: {
+        provider: 'Pipzpedia SMM',
+        apiKey: '2e935e9150f29fd3703901b508f7ce19',
+        baseUrl: 'https://pipzpedia.my.id/api/v2',
+        isActive: true
+      }
+    };
+    const settings = Storage.get(KEYS.SETTINGS, defaultSettings);
+    settings.activeMenus = activeMenus;
+    Storage.set(KEYS.SETTINGS, settings);
+  },
+
+  setNokosSettings: async (nokosSettings: { provider: string; apiKey: string; baseUrl?: string; isActive: boolean }) => {
+    const defaultSettings = { 
+      maintenanceMode: false,
+      activeMenus: {
+        nokos: true,
+        game: true,
+        pulsa: true,
+        ewallet: true,
+        voucher: true,
+        smm: true
+      },
+      nokosSettings: nokosSettings,
+      smmSettings: {
+        provider: 'Pipzpedia SMM',
+        apiKey: '2e935e9150f29fd3703901b508f7ce19',
+        baseUrl: 'https://pipzpedia.my.id/api/v2',
+        isActive: true
+      }
+    };
+    const settings = Storage.get(KEYS.SETTINGS, defaultSettings);
+    settings.nokosSettings = nokosSettings;
+    Storage.set(KEYS.SETTINGS, settings);
+  },
+
+  setSmmSettings: async (smmSettings: { provider: string; apiKey: string; baseUrl?: string; isActive: boolean; markupPercent?: number; markupFlat?: number }) => {
+    const defaultSettings = { 
+      maintenanceMode: false,
+      activeMenus: {
+        nokos: true,
+        game: true,
+        pulsa: true,
+        ewallet: true,
+        voucher: true,
+        smm: true
+      },
+      nokosSettings: {
+        provider: 'SMSHub',
+        apiKey: '',
+        baseUrl: 'https://smshub.org/api',
+        isActive: false
+      },
+      smmSettings: smmSettings
+    };
+    const settings = Storage.get(KEYS.SETTINGS, defaultSettings);
+    settings.smmSettings = smmSettings;
     Storage.set(KEYS.SETTINGS, settings);
   },
 

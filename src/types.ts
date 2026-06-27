@@ -12,6 +12,10 @@ export interface Product {
   productType?: 'Duplikat' | 'Unik';
   inventory?: string[];
   additionalImages?: string[];
+  isNokosApi?: boolean;
+  nokosCountry?: string;
+  nokosService?: string;
+  nokosOperator?: string;
 }
 
 export interface CartItem extends Product {
@@ -40,7 +44,7 @@ export interface Message {
   senderUid?: string;
 }
 
-export type View = 'home' | 'cart' | 'admin' | 'checkout' | 'orders' | 'topup' | 'profile' | 'customer-service' | 'community-chat' | 'vouchers';
+export type View = 'home' | 'cart' | 'admin' | 'checkout' | 'orders' | 'topup' | 'profile' | 'customer-service' | 'community-chat' | 'vouchers' | 'nokos' | 'smm';
 
 export type UserRole = 'admin' | 'user' | null;
 
@@ -79,7 +83,7 @@ export interface Voucher {
 }
 
 export interface PaymentGatewayConfig {
-  provider: 'Pak Kasir' | 'Manual';
+  provider: 'Pak Kasir' | 'Manual' | 'SanPay' | 'ZannPay';
   merchantCode?: string;
   apiKey: string;
   privateKey?: string;
